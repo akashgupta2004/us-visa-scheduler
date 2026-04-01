@@ -10,6 +10,7 @@ import os
 import time
 
 from playwright.async_api import async_playwright
+from playwright_stealth import Stealth
 
 from bot import login_customer
 from config import (
@@ -84,7 +85,7 @@ async def run():
 
     semaphore = asyncio.Semaphore(MAX_WORKERS)
 
-    async with async_playwright() as playwright:
+    async with Stealth().use_async(async_playwright()) as playwright:
         # Launch a single shared browser instance
         browser = await playwright.chromium.launch(headless=HEADLESS)
         logger.info(f"Browser launched | headless={HEADLESS} | max_workers={MAX_WORKERS}")

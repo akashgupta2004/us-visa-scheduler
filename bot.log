@@ -1,0 +1,70 @@
+2026-04-01 20:09:00,202  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 20:09:01,680  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 20:09:01,932  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 20:09:14,146  INFO      [001] Filling credentials for sattu
+2026-04-01 20:09:14,147  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-01 20:09:17,079  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-01 20:09:18,709  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-01 20:09:20,797  INFO      [001] Solved CAPTCHA: Captchamag
+2026-04-01 20:09:21,411  INFO      [001] Login successful ✅
+2026-04-01 20:09:21,596  INFO      [001] Session saved → sessions\001_session.json
+2026-04-01 20:27:11,508  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 20:27:12,750  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 20:27:13,011  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 20:27:43,025  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-01 20:27:55,727  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 20:27:57,072  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 20:27:57,355  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 20:28:17,497  INFO      [001] Filling credentials for sattu
+2026-04-01 20:28:17,498  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-01 20:28:56,535  ERROR     [001] ❌ Unexpected error: Locator.wait_for: Target page, context or browser has been closed
+Call log:
+  - waiting for locator("input[type=\"email\"], input[name*=\"user\" i], input[id*=\"user\" i], input[placeholder*=\"user\" i], input[name*=\"email\" i], input[id*=\"email\" i], input[placeholder*=\"email\" i], input:not([type=\"hidden\"]):not([type=\"password\"]):not([type=\"submit\"]):not([type=\"checkbox\"]):not([type=\"radio\"])").first to be visible
+
+2026-04-01 20:29:12,156  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 20:29:13,496  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 20:29:13,784  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 20:29:43,827  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-01 20:29:59,558  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 20:30:00,934  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 20:30:01,195  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 20:30:23,505  ERROR     [001] ❌ Unexpected error: Page.goto: net::ERR_ABORTED; maybe frame was detached?
+Call log:
+  - navigating to "https://www.usvisascheduling.com/en-US/", waiting until "domcontentloaded"
+
+2026-04-01 20:30:30,919  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 20:30:32,152  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 20:30:32,408  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 20:31:02,430  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-01 20:33:18,654  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 20:33:20,655  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 20:33:20,964  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 20:33:50,986  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-01 20:33:56,486  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 20:33:57,888  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 20:33:58,146  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 20:34:07,742  INFO      [001] Filling credentials for sattu
+2026-04-01 20:34:07,743  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-01 20:34:52,874  ERROR     [001] ❌ Unexpected error: Locator.wait_for: Target page, context or browser has been closed
+Call log:
+  - waiting for locator("input[type=\"email\"], input[name*=\"user\" i], input[id*=\"user\" i], input[placeholder*=\"user\" i], input[name*=\"email\" i], input[id*=\"email\" i], input[placeholder*=\"email\" i], input:not([type=\"hidden\"]):not([type=\"password\"]):not([type=\"submit\"]):not([type=\"checkbox\"]):not([type=\"radio\"])").first to be visible
+
+2026-04-01 22:50:16,510  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 22:50:17,245  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 22:50:17,470  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 22:50:47,480  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-01 22:50:50,868  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 22:50:51,501  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 22:50:51,708  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 22:50:54,226  INFO      [001] Filling credentials for sattu
+2026-04-01 22:50:54,227  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-01 22:51:30,308  ERROR     [001] ❌ Unexpected error: Locator.wait_for: Target page, context or browser has been closed
+Call log:
+  - waiting for locator("input[type=\"email\"], input[name*=\"user\" i], input[id*=\"user\" i], input[placeholder*=\"user\" i], input[name*=\"email\" i], input[id*=\"email\" i], input[placeholder*=\"email\" i], input:not([type=\"hidden\"]):not([type=\"password\"]):not([type=\"submit\"]):not([type=\"checkbox\"]):not([type=\"radio\"])").first to be visible
+
+2026-04-01 22:54:37,126  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-01 22:54:44,175  INFO      Browser launched | headless=False | max_workers=5
+2026-04-01 22:54:46,126  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-01 22:54:57,970  INFO      [001] Filling credentials for sattu
+2026-04-01 22:54:57,985  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-01 22:59:58,044  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?

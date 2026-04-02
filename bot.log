@@ -47,3 +47,175 @@ Call log:
 2026-04-02 00:18:31,799  INFO      [001] Login successful ✅
 2026-04-02 00:18:31,874  INFO      [001] Session saved → sessions\001_session.json
 2026-04-02 00:18:31,874  INFO      [001] Keeping window open for 60.0s to inspect results...
+2026-04-02 11:30:38,194  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 11:30:57,653  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 11:30:58,474  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 11:31:17,397  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 11:31:17,398  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 11:32:43,960  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 11:32:45,675  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 11:33:03,283  ERROR     [001] Failed to extract or solve CAPTCHA: APIRequestContext.post: read ECONNRESET
+Call log:
+  - → POST https://fastcaptcha.org/api/v1/ocr/
+    - user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36
+    - accept: */*
+    - accept-encoding: gzip,deflate,br
+    - sec-ch-ua: "Not;A)Brand";v="8", "Chrome";v="145", "Chromium";v="145"
+    - X-API-Key: QN92k7Xq5BFjN6_lBPa1zGDPXnw3Rw0Jyt5Vf6-n6hqjDNwVgu3xT97xmb2QMMB5
+    - content-type: multipart/form-data; boundary=----WebKitFormBoundaryYE5sM68FohreGOJY
+    - content-length: 2342
+
+2026-04-02 11:33:03,406  INFO      [001] Login successful ✅
+2026-04-02 11:33:03,624  INFO      [001] Session saved → sessions\001_session.json
+2026-04-02 11:33:03,624  INFO      [001] Keeping window open for 60.0s to inspect results...
+2026-04-02 11:33:49,867  ERROR     Future exception was never retrieved
+future: <Future finished exception=TargetClosedError('Target page, context or browser has been closed')>
+playwright._impl._errors.TargetClosedError: Target page, context or browser has been closed
+2026-04-02 11:36:02,523  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 11:36:03,820  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 11:36:04,524  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 11:36:14,210  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 11:36:14,211  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 11:37:15,757  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 11:37:17,413  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 11:37:18,876  INFO      [001] Solved CAPTCHA: UHUYr
+2026-04-02 11:37:19,468  ERROR     [001] Still on login page. Final URL: https://atlasauth.b2clogin.com/f50ebcfb-eadd-41d8-9099-a7049d073f5c/b2c_1a_atoproduction_atlas_susi/oauth2/v2.0/authorize?client_id=607d08d6-b63b-4735-ad82-05dfcff7efa4&redirect_uri=https%3A%2F%2Fwww.usvisascheduling.com%2Fsignin-aad-b2c_1&response_type=code%20id_token&scope=openid&state=OpenIdConnect.AuthenticationProperties%3D0nFxJ_3y0fH5yKfvRnwl3Q9Mw3cXxrBB27gWsBhc-5IwuM0Jho70z7Bo81sTTDYrQ00YZYYdz7UR88hkKXKjeU224PbtBMoDwr7QjGHX4Xqd0PAbuYCXdL-okZHb6Z7oYZiSkxlJ3LwOyTNFvWnLKHsGR64YGlr7IhlMvDdFBPZwkJ5TBZ8Lj4OdGWzBhbAkK5s2FH-izgugkO-gjW_sGvUqCrqU1lVo03nggjznYMZqIm5auiL1VkvPyi3QXTQg_rFr-ql73hXZXa8ANgcattZRtkUlnXFcOxMlB199v7yxH-fpUXk8I626C6uCQldLudLIQ3vh8NHqyqMLi7Jbpw054xmC9rvC7gGPuq8d9GFTtoACQ8wrDqXdAsFFoGKe9LFZCrW4fn-jfTP8puCEUiaFRf9rjjsSHEQYQosIMbiFx1tAaTk01aK5FAgn46sLfmYDzPOK767I7t4X502fEmeT-vPvHlsGjiJiD0sYc-gHyom19Y5x7_LkkNPQYvX1AvgLE5y120do9Xq3IemUZNpGhx8PzHKTFpEiasnf3B1JdwEyOjEvoiR9uAFH2c_48ZgOLJ47Vb_HZx1kUd4S2lttvfffDPxYeKOyL2nJfWXUO-ECQWHn61ULLDvSUX12&response_mode=form_post&nonce=639107068303280051.ZDNiMThhNDQtYmE2OC00OWQ2LWFhYjYtODllZGQ5YTZkMzcwZDEyYTA4MjYtYTkwNi00NDAzLWExN2EtMDlkNGU1MGUyZTc5&ui_locales=en-US&x-client-SKU=ID_NET472&x-client-ver=6.35.0.0
+2026-04-02 11:37:19,468  ERROR     [001] ❌ Unexpected error: Login failed. Re-prompted for credentials or CAPTCHA was invalid.
+2026-04-02 11:39:08,773  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 11:39:09,969  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 11:39:10,540  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 11:39:16,572  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 11:39:16,573  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 11:40:30,610  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 11:40:32,261  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 11:40:33,583  INFO      [001] Solved CAPTCHA: CGILE
+2026-04-02 11:40:46,113  ERROR     [001] ❌ Unexpected error: Target page, context or browser has been closed
+=========================== logs ===========================
+waiting for navigation to "<function ImplToApiMapping.wrap_handler.<locals>.wrapper_func at 0x000001B117377BA0>" until 'load'
+  navigated to "https://atlasauth.b2clogin.com/f50ebcfb-eadd-41d8-9099-a7049d073f5c/B2C_1A_atoproduction_Atlas_SUSI/api/SelfAsserted/confirmed?csrf_token=MjNQdEZDUUxMaEZPa2pLbU9GUE54ZVRkMkgrRXNtWFYvVTEwUk1ENjU5WHZkRFNPZUsyeG12TUdJVEdrMm03Szg2cmdPbmRNaFUyOEhVa3A2WUpjREE9PTsyMDI2LTA0LTAyVDA2OjEwOjI2LjI2NDQ3NDNaO0VjaUxMWVV3ZG9qVS82M2hRSmxCbXc9PTt7Ik9yY2hlc3RyYXRpb25TdGVwIjoxfQ==&tx=StateProperties=eyJUSUQiOiJkZTY5NTA2ZC01ZTMzLTRlNDktYmNkZi1iMzcyZmE4ZDNmODYifQ&p=B2C_1A_atoproduction_Atlas_SUSI&diags=%7B%22pageViewId%22%3A%2226c62fbe-4b51-4539-9c6b-af8ca4641cee%22%2C%22pageId%22%3A%22SelfAsserted%22%2C%22trace%22%3A%5B%7B%22ac%22%3A%22T005%22%2C%22acST%22%3A1775110227%2C%22acD%22%3A4%7D%2C%7B%22ac%22%3A%22T021%20-%20URL%3Ahttps%3A%2F%2Fatlasportalauthsa.z2.web.core.usgovcloudapi.net%2FB2C%2Fassets%2Fhtml%2FselfAsserted-atlascaptcha.html%22%2C%22acST%22%3A1775110227%2C%22acD%22%3A1445%7D%2C%7B%22ac%22%3A%22T019%22%2C%22acST%22%3A1775110229%2C%22acD%22%3A9%7D%2C%7B%22ac%22%3A%22T004%22%2C%22acST%22%3A1775110229%2C%22acD%22%3A5%7D%2C%7B%22ac%22%3A%22T003%22%2C%22acST%22%3A1775110229%2C%22acD%22%3A1%7D%2C%7B%22ac%22%3A%22T035%22%2C%22acST%22%3A1775110230%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T030Online%22%2C%22acST%22%3A1775110230%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775110234%2C%22acD%22%3A1407%7D%2C%7B%22ac%22%3A%22T002%22%2C%22acST%22%3A1775110235%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775110234%2C%22acD%22%3A1408%7D%5D%7D"
+============================================================
+2026-04-02 11:45:26,328  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 11:45:27,416  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 11:45:27,977  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 11:45:57,985  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-02 11:46:09,983  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 11:46:11,123  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 11:46:11,700  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 11:46:22,446  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 11:46:22,446  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 11:46:25,356  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 11:46:27,011  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 11:46:28,471  INFO      [001] Solved CAPTCHA: YYBF0
+2026-04-02 11:46:59,281  INFO      [001] Security questions detected. Answering...
+2026-04-02 11:47:00,984  ERROR     [001] Still on login page. Final URL: https://atlasauth.b2clogin.com/f50ebcfb-eadd-41d8-9099-a7049d073f5c/B2C_1A_atoproduction_Atlas_SUSI/api/SelfAsserted/confirmed?csrf_token=OUdVeW50RStkMnFtcHlnUjc0R2dLdHdMa2FBd3p1R0JHc1B5QmJLQzBVRjhUNTRPcCtNQUhRUytwNWtVN0IwSmdKbGJmMDFBTnRuU3o0MmlocnpicUE9PTsyMDI2LTA0LTAyVDA2OjE2OjIxLjAxNTEwNlo7Tk5TM2xYVlh0RlIwK25pYlJMeXBPdz09O3siT3JjaGVzdHJhdGlvblN0ZXAiOjF9&tx=StateProperties=eyJUSUQiOiIyMTQwYWJhYi01YzBmLTQ1NDEtYWYxYy1iMDJiZGYwODU0OWIifQ&p=B2C_1A_atoproduction_Atlas_SUSI&diags=%7B%22pageViewId%22%3A%22f7f02304-b731-4bd0-962a-f397b943e6cf%22%2C%22pageId%22%3A%22SelfAsserted%22%2C%22trace%22%3A%5B%7B%22ac%22%3A%22T005%22%2C%22acST%22%3A1775110582%2C%22acD%22%3A4%7D%2C%7B%22ac%22%3A%22T021%20-%20URL%3Ahttps%3A%2F%2Fatlasportalauthsa.z2.web.core.usgovcloudapi.net%2FB2C%2Fassets%2Fhtml%2FselfAsserted-atlascaptcha.html%22%2C%22acST%22%3A1775110582%2C%22acD%22%3A1187%7D%2C%7B%22ac%22%3A%22T019%22%2C%22acST%22%3A1775110583%2C%22acD%22%3A9%7D%2C%7B%22ac%22%3A%22T004%22%2C%22acST%22%3A1775110583%2C%22acD%22%3A6%7D%2C%7B%22ac%22%3A%22T003%22%2C%22acST%22%3A1775110583%2C%22acD%22%3A1%7D%2C%7B%22ac%22%3A%22T035%22%2C%22acST%22%3A1775110584%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T030Online%22%2C%22acST%22%3A1775110584%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017%22%2C%22acST%22%3A1775110589%2C%22acD%22%3A984%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775110603%2C%22acD%22%3A1400%7D%2C%7B%22ac%22%3A%22T002%22%2C%22acST%22%3A1775110604%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775110603%2C%22acD%22%3A1401%7D%5D%7D
+2026-04-02 11:47:00,985  ERROR     [001] ❌ Unexpected error: Login failed. Re-prompted for credentials or CAPTCHA was invalid.
+2026-04-02 11:47:04,648  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 11:47:05,805  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 11:47:06,391  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 11:47:14,079  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 11:47:14,080  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 11:47:17,485  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 11:47:19,156  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 11:47:20,664  INFO      [001] Solved CAPTCHA: RM19I
+2026-04-02 11:47:51,471  INFO      [001] Security questions detected. Answering...
+2026-04-02 11:48:21,542  ERROR     [001] Still on login page. Final URL: https://atlasauth.b2clogin.com/f50ebcfb-eadd-41d8-9099-a7049d073f5c/B2C_1A_atoproduction_Atlas_SUSI/api/SelfAsserted/confirmed?csrf_token=ZzF6WEFTMmt4L3p2Z3dVeEtBTzA1djRmcG5pa0ttMFhpaU5uOVRMSXVTc0w3NkVvR0sxaWFKcDN1Y0NOZHI0bTNtTjhLbit1eVZZbS84MzdkMFNmVUE9PTsyMDI2LTA0LTAyVDA2OjE3OjEyLjY4NDY2OTlaO3VOaDYzUlRxaUYxMGlWRHl3bDhDRWc9PTt7Ik9yY2hlc3RyYXRpb25TdGVwIjoxfQ==&tx=StateProperties=eyJUSUQiOiJkMTljNTNlOS1mODkwLTRjYzUtYWExNy05Y2JmMzRlNmFhZDcifQ&p=B2C_1A_atoproduction_Atlas_SUSI&diags=%7B%22pageViewId%22%3A%22e800e287-978c-4a21-946f-f441611d79d8%22%2C%22pageId%22%3A%22SelfAsserted%22%2C%22trace%22%3A%5B%7B%22ac%22%3A%22T005%22%2C%22acST%22%3A1775110634%2C%22acD%22%3A5%7D%2C%7B%22ac%22%3A%22T021%20-%20URL%3Ahttps%3A%2F%2Fatlasportalauthsa.z2.web.core.usgovcloudapi.net%2FB2C%2Fassets%2Fhtml%2FselfAsserted-atlascaptcha.html%22%2C%22acST%22%3A1775110634%2C%22acD%22%3A1339%7D%2C%7B%22ac%22%3A%22T019%22%2C%22acST%22%3A1775110635%2C%22acD%22%3A10%7D%2C%7B%22ac%22%3A%22T004%22%2C%22acST%22%3A1775110635%2C%22acD%22%3A4%7D%2C%7B%22ac%22%3A%22T003%22%2C%22acST%22%3A1775110635%2C%22acD%22%3A2%7D%2C%7B%22ac%22%3A%22T035%22%2C%22acST%22%3A1775110636%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T030Online%22%2C%22acST%22%3A1775110636%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775110641%2C%22acD%22%3A1288%7D%2C%7B%22ac%22%3A%22T002%22%2C%22acST%22%3A1775110642%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775110641%2C%22acD%22%3A1289%7D%5D%7D
+2026-04-02 11:48:21,544  ERROR     [001] ❌ Unexpected error: Login failed. Re-prompted for credentials or CAPTCHA was invalid.
+2026-04-02 11:50:09,726  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 11:50:10,957  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 11:50:11,550  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 11:50:28,588  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 11:50:28,589  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 11:50:32,013  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 11:50:33,667  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 11:50:35,065  INFO      [001] Solved CAPTCHA: PJHAK
+2026-04-02 11:50:38,099  ERROR     [001] ❌ Unexpected error: Locator.is_visible: Unexpected token "=" while parsing css selector ".error, .alert-danger, [id*='error' i], text='Invalid'". Did you mean to CSS.escape it?
+Call log:
+    - checking visibility of .error, .alert-danger, [id*='error' i], text='Invalid' >> nth=0
+
+2026-04-02 11:52:03,883  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 11:52:05,120  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 11:52:05,733  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 11:52:16,333  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 11:52:16,334  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 11:52:19,203  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 11:52:20,865  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 11:52:22,536  INFO      [001] Solved CAPTCHA: CNJSY
+2026-04-02 11:52:26,055  INFO      [001] Security questions detected. Answering...
+2026-04-02 11:52:39,634  INFO      [001] Login successful ✅
+2026-04-02 11:52:39,879  INFO      [001] Session saved → sessions\001_session.json
+2026-04-02 11:52:39,882  INFO      [001] Keeping window open for 60.0s to inspect results...
+2026-04-02 11:53:28,167  ERROR     [001] ❌ Unexpected error: Page.wait_for_timeout: Target page, context or browser has been closed
+2026-04-02 14:46:11,577  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 14:46:12,971  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 14:46:13,734  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 14:46:35,500  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 14:46:35,501  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 14:49:36,348  ERROR     [001] ❌ Unexpected error: Locator.wait_for: Target page, context or browser has been closed
+Call log:
+  - waiting for locator("input[type=\"email\"], input[name*=\"user\" i], input[id*=\"user\" i], input[placeholder*=\"user\" i], input[name*=\"email\" i], input[id*=\"email\" i], input[placeholder*=\"email\" i], input:not([type=\"hidden\"]):not([type=\"password\"]):not([type=\"submit\"]):not([type=\"checkbox\"]):not([type=\"radio\"])").first to be visible
+    4 × waiting for" https://www.usvisascheduling.com/en-US/" navigation to finish...
+      - navigated to "https://www.usvisascheduling.com/en-US/"
+
+2026-04-02 14:49:45,794  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 14:49:47,027  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 14:49:47,830  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 14:50:17,847  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-02 14:50:42,750  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 14:50:44,223  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 14:50:44,939  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 14:51:14,950  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-02 14:53:48,890  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 14:53:50,204  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 14:53:51,037  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 14:54:21,050  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-02 14:55:26,515  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 14:55:27,919  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 14:55:28,643  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 14:55:58,657  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-02 14:56:34,855  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 14:56:36,385  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 14:56:37,281  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 14:57:07,295  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-02 15:00:10,700  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 15:00:12,106  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 15:00:12,834  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 15:00:42,851  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?
+2026-04-02 19:02:54,265  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 19:02:56,327  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 19:02:57,275  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 19:03:20,688  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 19:03:20,688  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 19:06:08,741  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 19:06:10,516  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 19:06:12,120  INFO      [001] Solved CAPTCHA: AGUZW
+2026-04-02 19:06:13,300  INFO      [001] Security questions detected. Answering...
+2026-04-02 19:06:45,486  ERROR     [001] Still on login page. Final URL: https://atlasauth.b2clogin.com/f50ebcfb-eadd-41d8-9099-a7049d073f5c/B2C_1A_atoproduction_Atlas_SUSI/api/SelfAsserted/confirmed?csrf_token=Y2VncTdsTFN5eVVqd0F3WHpHbStJWFpreEZ1b0kvZ3hocmtVU1pMVHM4RWNHc2dqSzk5V3k0NDBYNVFGaFQ0RWE3R1hGMHRKaGhYTXhpV1BpcFQwU1E9PTsyMDI2LTA0LTAyVDEzOjM2OjA0LjkyMDE0NTRaO25uNGd4SzduR2lzdEI5VEwySDFIaXc9PTt7Ik9yY2hlc3RyYXRpb25TdGVwIjoxfQ==&tx=StateProperties=eyJUSUQiOiIzZGRlZTU1OS01NjNhLTQzNjEtYmJiMS1mZGY2NjIzNWZhNDEifQ&p=B2C_1A_atoproduction_Atlas_SUSI&diags=%7B%22pageViewId%22%3A%22b0cea6bc-285e-4a3d-9a50-a0360675a616%22%2C%22pageId%22%3A%22SelfAsserted%22%2C%22trace%22%3A%5B%7B%22ac%22%3A%22T005%22%2C%22acST%22%3A1775136965%2C%22acD%22%3A16%7D%2C%7B%22ac%22%3A%22T021%20-%20URL%3Ahttps%3A%2F%2Fatlasportalauthsa.z2.web.core.usgovcloudapi.net%2FB2C%2Fassets%2Fhtml%2FselfAsserted-atlascaptcha.html%22%2C%22acST%22%3A1775136965%2C%22acD%22%3A1287%7D%2C%7B%22ac%22%3A%22T019%22%2C%22acST%22%3A1775136966%2C%22acD%22%3A16%7D%2C%7B%22ac%22%3A%22T004%22%2C%22acST%22%3A1775136966%2C%22acD%22%3A8%7D%2C%7B%22ac%22%3A%22T003%22%2C%22acST%22%3A1775136966%2C%22acD%22%3A4%7D%2C%7B%22ac%22%3A%22T035%22%2C%22acST%22%3A1775136967%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T030Online%22%2C%22acST%22%3A1775136967%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775136972%2C%22acD%22%3A1081%7D%2C%7B%22ac%22%3A%22T002%22%2C%22acST%22%3A1775136973%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775136972%2C%22acD%22%3A1082%7D%5D%7D
+2026-04-02 19:06:45,487  ERROR     [001] ❌ Unexpected error: Login failed. Re-prompted for credentials or CAPTCHA was invalid.
+2026-04-02 19:09:04,834  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 19:09:06,227  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 19:09:06,925  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 19:09:10,403  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 19:09:10,405  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 19:11:36,441  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 19:11:38,080  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 19:11:39,607  INFO      [001] Solved CAPTCHA: BYNKN
+2026-04-02 19:11:42,859  INFO      [001] Security questions detected. Answering...
+2026-04-02 19:12:30,246  INFO      [001] Login successful ✅
+2026-04-02 19:12:30,868  INFO      [001] Session saved → sessions\001_session.json
+2026-04-02 19:12:30,870  INFO      [001] Keeping window open for 60.0s to inspect results...
+2026-04-02 19:12:54,773  ERROR     [001] ❌ Unexpected error: Page.wait_for_timeout: Target page, context or browser has been closed
+2026-04-02 19:21:10,482  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 19:21:11,890  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 19:21:12,694  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 19:21:24,103  INFO      [001] Filling credentials for allwyn.leso
+2026-04-02 19:21:24,104  INFO      [001] Waiting for the login form to appear (Bypassing Waiting Rooms if present)...
+2026-04-02 19:21:27,051  INFO      [001] CAPTCHA detected. Solving with FastCaptcha...
+2026-04-02 19:21:28,706  INFO      [001] Successfully extracted CAPTCHA image bytes.
+2026-04-02 19:21:30,297  INFO      [001] Solved CAPTCHA: UXMES
+2026-04-02 19:21:34,961  INFO      [001] Security questions detected. Answering...
+2026-04-02 19:22:05,031  ERROR     [001] Still on login page. Final URL: https://atlasauth.b2clogin.com/f50ebcfb-eadd-41d8-9099-a7049d073f5c/B2C_1A_atoproduction_Atlas_SUSI/api/SelfAsserted/confirmed?csrf_token=NEorTE5rNS9DcTlPZGhEblNVMXJab0M0aDY4TWpaSlN4cFZBSkRUK2lHNmwzM2JLZGE1eVF0OHJESzVqZWVEVGpXSytUb3ZFRTJnNzF2LzI3SlpuTkE9PTsyMDI2LTA0LTAyVDEzOjUxOjIzLjI4NzkyMDJaO1o0aEU3RmI2RUMvVjQ4Z1g4NktyNkE9PTt7Ik9yY2hlc3RyYXRpb25TdGVwIjoxfQ==&tx=StateProperties=eyJUSUQiOiJkM2M5NzExZi1iYjEyLTRkNGUtYWMzYy00NDEzN2U2MGNkMjMifQ&p=B2C_1A_atoproduction_Atlas_SUSI&diags=%7B%22pageViewId%22%3A%22aade1a70-b8d7-4c84-868a-a0f83c87217a%22%2C%22pageId%22%3A%22SelfAsserted%22%2C%22trace%22%3A%5B%7B%22ac%22%3A%22T005%22%2C%22acST%22%3A1775137884%2C%22acD%22%3A5%7D%2C%7B%22ac%22%3A%22T021%20-%20URL%3Ahttps%3A%2F%2Fatlasportalauthsa.z2.web.core.usgovcloudapi.net%2FB2C%2Fassets%2Fhtml%2FselfAsserted-atlascaptcha.html%22%2C%22acST%22%3A1775137884%2C%22acD%22%3A1391%7D%2C%7B%22ac%22%3A%22T019%22%2C%22acST%22%3A1775137885%2C%22acD%22%3A10%7D%2C%7B%22ac%22%3A%22T004%22%2C%22acST%22%3A1775137885%2C%22acD%22%3A4%7D%2C%7B%22ac%22%3A%22T003%22%2C%22acST%22%3A1775137885%2C%22acD%22%3A1%7D%2C%7B%22ac%22%3A%22T035%22%2C%22acST%22%3A1775137885%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T030Online%22%2C%22acST%22%3A1775137885%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775137890%2C%22acD%22%3A1298%7D%2C%7B%22ac%22%3A%22T002%22%2C%22acST%22%3A1775137892%2C%22acD%22%3A0%7D%2C%7B%22ac%22%3A%22T017T010%22%2C%22acST%22%3A1775137890%2C%22acD%22%3A1298%7D%5D%7D
+2026-04-02 19:22:05,032  ERROR     [001] ❌ Unexpected error: Login failed. Re-prompted for credentials or CAPTCHA was invalid.
+2026-04-02 19:23:56,557  INFO      Loaded 1 customer(s) from credentials.csv
+2026-04-02 19:23:58,060  INFO      Browser launched | headless=False | max_workers=5
+2026-04-02 19:23:59,214  INFO      [001] Navigating to https://www.usvisascheduling.com/en-US/
+2026-04-02 19:24:29,237  ERROR     [001] ❌ Timed-out waiting for post-login element. Wrong credentials or CAPTCHA?

@@ -59,6 +59,7 @@ async def login_customer(
             viewport={"width": 1280, "height": 720},
             proxy=proxy_settings,
         )
+        
         context.set_default_timeout(TIMEOUT_MS)
         page: Page = await context.new_page()
 
@@ -123,17 +124,26 @@ async def login_customer(
                 logger.info(f"[{customer_id}] Successfully extracted CAPTCHA image bytes.")
                 
                 # Send to FastCaptcha OCR API
-                resp = await context.request.post(
-                    "https://fastcaptcha.org/api/v1/ocr/",
-                    headers={"X-API-Key": FAST_CAPTCHA_API_KEY},
-                    multipart={
-                        "image": {
-                            "name": "captcha.jpg",
-                            "mimeType": "image/jpeg",
-                            "buffer": img_bytes,
-                        }
-                    }
-                )
+                # Add retry logic because the Python async HTTP client sometimes drops connections (ECONNRESET) unexpectedly
+                for attempt in range(3):
+                    try:
+                        resp = await context.request.post(
+                            "https://fastcaptcha.org/api/v1/ocr/",
+                            headers={"X-API-Key": FAST_CAPTCHA_API_KEY},
+                            multipart={
+                                "image": {
+                                    "name": "captcha.jpg",
+                                    "mimeType": "image/jpeg",
+                                    "buffer": img_bytes,
+                                }
+                            }
+                        )
+                        break
+                    except Exception as e:
+                        if attempt == 2:
+                            raise e
+                        logger.warning(f"[{customer_id}] FastCaptcha connection dropped, retrying in 1s... ({e})")
+                        await asyncio.sleep(1)
                 
                 if resp.ok:
                     data = await resp.json()
@@ -153,19 +163,56 @@ async def login_customer(
         await submit_btn.click()
 
         # ── Step 4 · Confirm login was successful ────────────────────────────
-        # Wait for the URL to change from the initial login page
-        try:
-            await page.wait_for_url(
-                lambda u: u.split('?')[0] != LOGIN_URL.split('?')[0], 
-                timeout=TIMEOUT_MS
-            )
-        except PlaywrightTimeout:
-            # If URL didn't change (e.g. Single Page Apps), wait for network requests to settle
-            await page.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
+        # Wait for the page or network to transition after submitting credentials
+        await page.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
+        
+        # Check if login completely failed immediately (e.g. invalid captcha error banner)
+        if await page.locator(".error, .alert-danger, [id*='error' i], :text-matches('Invalid', 'i')").first.is_visible(timeout=1000):
+            logger.warning(f"[{customer_id}] Warning: Possible login error banner detected on screen.")
             
-            # Simple heuristic: If the password field is still usable, login likely failed (e.g. validation error)
-            if await pwd_input.is_visible() and await pwd_input.is_editable():
-                raise Exception("Login form still active after submission. Login likely failed.")
+        # ── Step 5 · Check for Security Questions ────────────────────────────
+        # Sometimes B2C redirects to a security question page before finalizing login
+        try:
+            car_input = page.locator("input:below(:text-matches('car', 'i')):visible").first
+            food_input = page.locator("input:below(:text-matches('food', 'i')):visible").first
+            hero_input = page.locator("input:below(:text-matches('hero', 'i')):visible").first
+            
+            answered_questions = 0
+            if await page.locator("text='security'i") .is_visible(timeout=5000) or await car_input.is_visible(timeout=1000) or await food_input.is_visible(timeout=1000):
+                logger.info(f"[{customer_id}] Security questions detected. Answering...")
+                
+                if await car_input.is_visible():
+                    await car_input.fill("C777")
+                    answered_questions += 1
+                if await food_input.is_visible():
+                    await food_input.fill("F777")
+                    answered_questions += 1
+                if await hero_input.is_visible():
+                    await hero_input.fill("H777")
+                    answered_questions += 1
+                    
+                if answered_questions > 0:
+                    continue_btn = page.locator("#continue, button:has-text('Continue'), input[type='submit'], button:has-text('Submit')").first
+                    await continue_btn.click()
+                    
+                    # After answering questions, B2C should FINALLY redirect back to usvisascheduling.com
+                    try:
+                        await page.wait_for_url(
+                            lambda u: "b2clogin.com" not in u and "signin" not in u.lower(), 
+                            timeout=TIMEOUT_MS
+                        )
+                    except PlaywrightTimeout:
+                        pass
+                    
+                    await page.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
+        except Exception as e:
+            logger.debug(f"[{customer_id}] Error while trying to answer security questions: {e}")
+
+        # ── Step 6 · Verify absolute final success ───────────────────────────
+        # Hard check: If the URL is still pointing to the B2C login gateway or login page, it did NOT work.
+        if "b2clogin.com" in page.url or "signin" in page.url.lower() or "login" in page.url.lower():
+            logger.error(f"[{customer_id}] Still on login page. Final URL: {page.url}")
+            raise Exception("Login failed. Re-prompted for credentials or CAPTCHA was invalid.")
                 
         logger.info(f"[{customer_id}] Login successful ✅")
 

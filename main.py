@@ -37,11 +37,16 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Load credentials from CSV
+#  Load credentials from CSV  (all columns are passed through)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_credentials(filepath: str) -> list[dict]:
-    """Returns a list of dicts with keys: customer_id, username, password."""
+    """
+    Returns a list of dicts with keys matching every CSV column header.
+    Required columns: customer_id, username, password
+    Optional columns: ans_car, ans_food, ans_hero, ans_pet, ans_job,
+                      ans_city, ans_sport, ans_color, ans_teacher, ans_movie
+    """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"Credentials file not found: {filepath}")
 
@@ -49,8 +54,7 @@ def load_credentials(filepath: str) -> list[dict]:
     with open(filepath, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            # Strip whitespace from all fields
-            customers.append({k: v.strip() for k, v in row.items()})
+            customers.append({k.strip(): v.strip() for k, v in row.items()})
 
     logger.info(f"Loaded {len(customers)} customer(s) from {filepath}")
     return customers
@@ -61,15 +65,41 @@ def load_credentials(filepath: str) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def bounded_login(semaphore: asyncio.Semaphore, browser, customer: dict, delay: float):
-    """Acquires a slot in the semaphore, waits `delay` seconds, then logs in."""
+    """Acquires a semaphore slot, waits `delay` seconds, then logs in with automatic CAPTCHA retries."""
     async with semaphore:
         await asyncio.sleep(delay)
-        return await login_customer(
-            browser=browser,
-            customer_id=customer["customer_id"],
-            username=customer["username"],
-            password=customer["password"],
-        )
+        customer_id = customer["customer_id"]
+
+        # Retry up to 3 times automatically if CAPTCHA is wrong
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                logger.info(f"[{customer_id}] Retrying login (attempt {attempt}/{max_attempts})...")
+                await asyncio.sleep(3)   # Brief pause before re-attempting
+
+            result = await login_customer(
+                browser=browser,
+                customer_id=customer["customer_id"],
+                username=customer["username"],
+                password=customer["password"],
+                answers=customer,
+            )
+
+            if result["status"] == "success":
+                return result
+
+            # Only retry on CAPTCHA-related failures — don't retry credential errors
+            error = result.get("error", "")
+            if "CAPTCHA" in error or "B2C did not redirect" in error:
+                if attempt < max_attempts:
+                    logger.warning(f"[{customer_id}] CAPTCHA failure on attempt {attempt}. Will retry...")
+                    continue
+
+            # Non-retryable error or exhausted retries
+            return result
+
+        return result  # Return last result after all retries exhausted
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,23 +116,21 @@ async def run():
     semaphore = asyncio.Semaphore(MAX_WORKERS)
 
     async with Stealth().use_async(async_playwright()) as playwright:
-        # Launch a single shared browser instance
         browser = await playwright.chromium.launch(headless=HEADLESS)
         logger.info(f"Browser launched | headless={HEADLESS} | max_workers={MAX_WORKERS}")
 
-        # Build all login tasks, staggered by DELAY_BETWEEN_LOGINS
         tasks = [
             bounded_login(semaphore, browser, customer, idx * DELAY_BETWEEN_LOGINS)
             for idx, customer in enumerate(customers)
         ]
 
-        start = time.perf_counter()
+        start   = time.perf_counter()
         results = await asyncio.gather(*tasks)
         elapsed = time.perf_counter() - start
 
         await browser.close()
 
-    # ── Print a summary report ────────────────────────────────────────────────
+    # ── Print summary report ──────────────────────────────────────────────────
     success = [r for r in results if r["status"] == "success"]
     failed  = [r for r in results if r["status"] == "failed"]
 

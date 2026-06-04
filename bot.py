@@ -1,378 +1,618 @@
 """
-bot.py  –  Core login + session-save logic for a single customer.
-Each customer gets their own isolated Playwright BrowserContext.
+=============================================================
+  Visa Scheduling Bot — usvisascheduling.com/en-US/
+  ─────────────────────────────────────────────────
+  HOW TO USE:
+  1. Close ALL Chrome windows
+  2. Run this in a terminal FIRST:
+       "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
+  3. In the Chrome window that opens, go to ANY page (e.g. google.com)
+  4. Then run:  python bot.py
+
+  The bot connects to YOUR real Chrome (bypasses Cloudflare completely).
+=============================================================
 """
 
 import asyncio
-import logging
+import base64
+import json
 import os
+import random
+import sys
+import time
+import logging
+import subprocess
+from pathlib import Path
 
-from playwright.async_api import Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeout
+from dotenv import load_dotenv
+from playwright.async_api import async_playwright, Page, BrowserContext
 
-from config import (
-    LOGIN_URL,
-    SESSIONS_DIR,
-    TIMEOUT_MS,
-    FAST_CAPTCHA_API_KEY,
-    WAITING_ROOM_TIMEOUT_MS,
-    POST_LOGIN_STAY_OPEN_MS,
-    USE_PROXY,
-    PROXY_SERVER,
+# ── playwright-stealth ───────────────────────────────────────
+try:
+    from playwright_stealth import Stealth as _Stealth
+    async def _apply_stealth(page: Page):
+        await _Stealth().apply_stealth_async(page)
+except ImportError:
+    try:
+        from playwright_stealth import stealth_async as _sa
+        async def _apply_stealth(page: Page):
+            await _sa(page)
+    except ImportError:
+        async def _apply_stealth(page: Page):
+            pass
+
+# ── FastCaptcha ──────────────────────────────────────────────
+try:
+    from fastcaptcha import FastCaptcha, FastCaptchaException
+    _FC_AVAILABLE = True
+except ImportError:
+    _FC_AVAILABLE = False
+
+# ─────────────────────────────────────────────────────────────
+load_dotenv()
+
+FASTCAPTCHA_API_KEY = os.getenv("FASTCAPTCHA_API_KEY", "")
+VISA_USERNAME       = os.getenv("VISA_USERNAME", "")
+VISA_PASSWORD       = os.getenv("VISA_PASSWORD", "")
+
+BASE_URL            = "https://www.usvisascheduling.com/en-US/"
+LOGIN_URL           = "https://www.usvisascheduling.com/en-US/Account/LogOn"
+SECURITY_Q_FILE     = Path(__file__).parent / "security_questions.json"
+CHROME_EXE          = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+CDP_PORT            = 9222
+
+# ─────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
+log = logging.getLogger("visa-bot")
 
-logger = logging.getLogger(__name__)
+# ─────────────────────────────────────────────────────────────
+# Human-like helpers
+# ─────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Security question keyword → CSV column name
-#  The bot reads the label text of each question, finds a keyword match here,
-#  then looks up the answer from the per-customer answers dict.
-# ─────────────────────────────────────────────────────────────────────────────
-QUESTION_KEYWORD_MAP = {
-    # Exact phrases seen on the US Visa Scheduling portal
-    "first car":        "ans_car",
-    "childhood hero":   "ans_hero",
-    "favourite food":   "ans_food",
-    "favorite food":    "ans_food",
-    "favourite car":    "ans_car",
-    "favorite car":     "ans_car",
-    "childhood pet":    "ans_pet",
-    "favourite pet":    "ans_pet",
-    "favorite pet":     "ans_pet",
-    "first job":        "ans_job",
-    "born":             "ans_city",
-    "hometown":         "ans_city",
-    "childhood friend": "ans_teacher",
-    "favourite movie":  "ans_movie",
-    "favorite movie":   "ans_movie",
-    # Fallback single keywords (less specific, but catches edge cases)
-    "car":     "ans_car",
-    "food":    "ans_food",
-    "hero":    "ans_hero",
-    "pet":     "ans_pet",
-    "job":     "ans_job",
-    "city":    "ans_city",
-    "sport":   "ans_sport",
-    "color":   "ans_color",
-    "colour":  "ans_color",
-    "teacher": "ans_teacher",
-    "movie":   "ans_movie",
-    "film":    "ans_movie",
-}
+async def human_delay(min_ms: int = 60, max_ms: int = 180) -> None:
+    await asyncio.sleep(random.uniform(min_ms / 1000, max_ms / 1000))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Public entry-point  –  called once per customer from main.py
-# ─────────────────────────────────────────────────────────────────────────────
+async def human_type(page: Page, selector: str, text: str) -> None:
+    loc = page.locator(selector).first
+    await loc.click()
+    await loc.fill("")  # Ensure the field is cleared to avoid double typing
+    await human_delay(100, 300)
+    for char in text:
+        await loc.type(char, delay=random.uniform(50, 150))
+    await human_delay(80, 200)
 
-async def login_customer(
-    browser: Browser,
-    customer_id: str,
-    username: str,
-    password: str,
-    answers: dict,          # Per-customer security-question answers from CSV
-) -> dict:
+
+async def human_click(page: Page, selector: str) -> None:
+    element = page.locator(selector).first
+    box = await element.bounding_box()
+    if box:
+        x = box["x"] + box["width"]  * random.uniform(0.3, 0.7)
+        y = box["y"] + box["height"] * random.uniform(0.3, 0.7)
+        await page.mouse.move(x, y)
+        await human_delay(50, 150)
+        await page.mouse.click(x, y)
+    else:
+        await element.click()
+    await human_delay(100, 250)
+
+
+# ─────────────────────────────────────────────────────────────
+# Launch Chrome with remote debugging (if not already running)
+# ─────────────────────────────────────────────────────────────
+
+def ensure_chrome_debug_running() -> None:
     """
-    Opens an isolated browser context, logs in the customer, saves the session,
-    then closes the context.
-
-    Returns a result dict:
-        {
-            "customer_id": str,
-            "status":      "success" | "failed",
-            "session_file": str | None,
-            "error":       str | None,
-        }
+    Start Chrome with remote debugging on port 9222 if it isn't already.
+    Waits for the debug port to become available.
     """
-    context: BrowserContext | None = None
+    import socket, time
 
-    try:
-        # ── Step 1 · Create a fully isolated browser context ─────────────────
-        proxy_settings = {"server": PROXY_SERVER} if USE_PROXY and PROXY_SERVER else None
-
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            viewport={"width": 1280, "height": 720},
-            proxy=proxy_settings,
-        )
-        context.set_default_timeout(TIMEOUT_MS)
-        page: Page = await context.new_page()
-
-        # ── Step 2 · Navigate to the login page ──────────────────────────────
-        logger.info(f"[{customer_id}] Navigating to {LOGIN_URL}")
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-
-        # ── Step 3 · Fill in credentials ─────────────────────────────────────
-        logger.info(f"[{customer_id}] Filling credentials for {username}")
-
-        # Azure B2C (which powers this portal) uses a specific ID for the username field: signInName
-        # We list it first, then fall back to generic selectors for other portal types.
-        user_input = page.locator(
-            'input#signInName, '
-            'input[type="email"], '
-            'input[name*="user" i], input[id*="user" i], input[placeholder*="user" i], '
-            'input[name*="email" i], input[id*="email" i], input[placeholder*="email" i], '
-            'input:not([type="hidden"]):not([type="password"]):not([type="submit"])'
-            ':not([type="checkbox"]):not([type="radio"])'
-        ).first
-        pwd_input  = page.locator('input#password, input[type="password"]').first
-        submit_btn = page.locator(
-            'button#next, '
-            'button[type="submit"], input[type="submit"], '
-            'button:has-text("Log in"), button:has-text("Login"), '
-            'button:has-text("Sign in"), button:has-text("Signin"), '
-            'button:has-text("Submit"), button:has-text("Continue")'
-        ).first
-
-        # Wait for the login form (handles waiting rooms / queues)
-        logger.info(f"[{customer_id}] Waiting for login form (bypassing waiting rooms if present)...")
-        await user_input.wait_for(state="visible", timeout=WAITING_ROOM_TIMEOUT_MS)
-
-        await user_input.fill(username)
-        await pwd_input.fill(password)
-
-        # ── Step 4 · Solve CAPTCHA if present ───────────────────────────────
-        captcha_img = page.locator('#captchaImage')
+    def port_open(port: int) -> bool:
         try:
-            await captcha_img.wait_for(state="visible", timeout=3000)
-        except PlaywrightTimeout:
-            pass  # No CAPTCHA on this page load
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except OSError:
+            return False
 
-        if await captcha_img.is_visible():
-            logger.info(f"[{customer_id}] CAPTCHA detected. Solving with FastCaptcha...")
-            await page.wait_for_timeout(1500)  # Let image fully render
+    if port_open(CDP_PORT):
+        log.info(f"Chrome debug port {CDP_PORT} already active — connecting.")
+        return
 
-            try:
-                img_bytes = await captcha_img.screenshot(type="jpeg")
-                logger.info(f"[{customer_id}] Extracted CAPTCHA image bytes.")
+    log.info(f"Starting Chrome with --remote-debugging-port={CDP_PORT} …")
 
-                # Up to 3 retries for network drops (ECONNRESET)
-                for attempt in range(3):
-                    try:
-                        resp = await context.request.post(
-                            "https://fastcaptcha.org/api/v1/ocr/",
-                            headers={"X-API-Key": FAST_CAPTCHA_API_KEY},
-                            multipart={
-                                "image": {
-                                    "name": "captcha.jpg",
-                                    "mimeType": "image/jpeg",
-                                    "buffer": img_bytes,
-                                }
-                            },
-                        )
-                        break
-                    except Exception as e:
-                        if attempt == 2:
-                            raise e
-                        logger.warning(f"[{customer_id}] FastCaptcha dropped, retrying... ({e})")
-                        await asyncio.sleep(1)
+    profile_dir = Path(__file__).parent / "chrome_profile"
+    profile_dir.mkdir(exist_ok=True)
 
-                if resp.ok:
-                    data = await resp.json()
-                    captcha_text = data.get("text", "").strip()
-                    if captcha_text:
-                        logger.info(f"[{customer_id}] CAPTCHA solved: {captcha_text}")
-                        await page.fill('#extension_atlasCaptchaResponse', captcha_text)
-                        await page.wait_for_timeout(500)
-                    else:
-                        logger.error(f"[{customer_id}] FastCaptcha returned empty text! Response: {data}")
-                else:
-                    logger.error(f"[{customer_id}] FastCaptcha API error {resp.status}: {await resp.text()}")
-
-            except Exception as e:
-                logger.error(f"[{customer_id}] CAPTCHA solving failed: {e}")
-
-        # ── Step 5 · Submit the login form ───────────────────────────────────
-        await submit_btn.click()
-        logger.info(f"[{customer_id}] Login form submitted. Waiting for redirect away from Microsoft B2C...")
-
-        # Wait for B2C to redirect us somewhere (either the dashboard OR the security questions page)
-        try:
-            await page.wait_for_url(
-                lambda u: "b2clogin.com" not in u,
-                timeout=TIMEOUT_MS,
+    chrome_exe = CHROME_EXE
+    if not os.path.isfile(chrome_exe):
+        # Try LOCALAPPDATA path
+        alt = os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe")
+        if os.path.isfile(alt):
+            chrome_exe = alt
+        else:
+            log.error(
+                "Chrome not found. Please start Chrome manually with:\n"
+                f'  "{CHROME_EXE}" --remote-debugging-port={CDP_PORT}\n'
+                "Then run this bot again."
             )
-        except PlaywrightTimeout:
-            # B2C did not redirect — CAPTCHA was likely wrong
-            error_img = os.path.join(SESSIONS_DIR, f"{customer_id}_error.png")
-            os.makedirs(SESSIONS_DIR, exist_ok=True)
-            await page.screenshot(path=error_img, full_page=True)
-            logger.error(f"[{customer_id}] Still on B2C after submit — CAPTCHA likely wrong. Screenshot: {error_img}")
-            raise Exception("Login failed: B2C did not redirect. CAPTCHA was likely incorrect.")
+            sys.exit(1)
 
-        await page.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
-        logger.info(f"[{customer_id}] Redirected to: {page.url}")
+    subprocess.Popen([
+        chrome_exe,
+        f"--remote-debugging-port={CDP_PORT}",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-blink-features=AutomationControlled",
+        "about:blank",
+    ])
 
-        # ── Step 6 · Handle Security Questions on US Visa portal ─────────────
-        # After the B2C redirect, usvisascheduling.com may show a "User Details"
-        # page with 2 random security questions before granting dashboard access.
-        await _answer_security_questions(page, customer_id, answers)
-
-        # ── Step 7 · Verify we actually landed on the dashboard ───────────────
-        # We should now be on the US Visa Scheduling dashboard, NOT a login/security page.
-        if "b2clogin.com" in page.url or "/Account/Login" in page.url or "UserDetails" in page.url:
-            error_img = os.path.join(SESSIONS_DIR, f"{customer_id}_error.png")
-            os.makedirs(SESSIONS_DIR, exist_ok=True)
-            await page.screenshot(path=error_img, full_page=True)
-            logger.error(f"[{customer_id}] Still on auth/security page! URL: {page.url}")
-            logger.error(f"[{customer_id}] Error screenshot saved → {error_img}")
-            raise Exception(
-                f"Login failed: security questions may not have been answered correctly. "
-                f"Check {error_img} for a screenshot."
-            )
-
-        logger.info(f"[{customer_id}] Login successful ✅")
-
-        # ── Step 8 · Save the authenticated session ───────────────────────────
-        os.makedirs(SESSIONS_DIR, exist_ok=True)
-        session_path = os.path.join(SESSIONS_DIR, f"{customer_id}_session.json")
-        await context.storage_state(path=session_path)
-        logger.info(f"[{customer_id}] Session saved → {session_path}")
-
-        # Keep window open for inspection if configured
-        if POST_LOGIN_STAY_OPEN_MS > 0:
-            logger.info(f"[{customer_id}] Keeping window open for {POST_LOGIN_STAY_OPEN_MS / 1000:.0f}s...")
-            try:
-                await page.wait_for_timeout(POST_LOGIN_STAY_OPEN_MS)
-            except Exception:
-                pass  # Browser was closed manually by the user – that is fine
-
-        return {
-            "customer_id": customer_id,
-            "status": "success",
-            "session_file": session_path,
-            "error": None,
-        }
-
-    except PlaywrightTimeout:
-        msg = "Timed-out waiting for a page element. Check the site, credentials, or CAPTCHA."
-        logger.error(f"[{customer_id}] ❌ {msg}")
-        return {"customer_id": customer_id, "status": "failed", "session_file": None, "error": msg}
-
-    except Exception as exc:
-        logger.error(f"[{customer_id}] ❌ Unexpected error: {exc}")
-        return {"customer_id": customer_id, "status": "failed", "session_file": None, "error": str(exc)}
-
-    finally:
-        if context:
-            await context.close()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Internal helper: dynamically answer all security questions on the page
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def _answer_security_questions(page: Page, customer_id: str, answers: dict) -> None:
-    """
-    Reads every <label> on the current page.
-    If a label contains a keyword we know (car, food, hero, pet, job…),
-    we find the <input> associated with that label and fill in the
-    per-customer answer from the `answers` dict.
-    If no security question inputs are found, returns immediately.
-    """
-    try:
-        # Collect all label elements on the page
-        labels = page.locator("label")
-        count  = await labels.count()
-
-        if count == 0:
-            logger.debug(f"[{customer_id}] No <label> elements found on page — skipping security questions.")
+    # Wait up to 15 s for port to open
+    for i in range(30):
+        time.sleep(0.5)
+        if port_open(CDP_PORT):
+            log.info("Chrome debug port ready.")
             return
 
-        # Log ALL visible label texts so we can see what the page is showing
-        visible_labels = []
+    log.error(f"Chrome debug port {CDP_PORT} did not open in time.")
+    sys.exit(1)
+
+
+# ─────────────────────────────────────────────────────────────
+# Connect to running Chrome via CDP
+# ─────────────────────────────────────────────────────────────
+
+async def connect_to_chrome(playwright) -> tuple[BrowserContext, Page]:
+    """Connect Playwright to a running Chrome via CDP."""
+    log.info(f"Connecting to Chrome on ws://127.0.0.1:{CDP_PORT} …")
+
+    browser = await playwright.chromium.connect_over_cdp(
+        f"http://127.0.0.1:{CDP_PORT}"
+    )
+
+    context = browser.contexts[0] if browser.contexts else await browser.new_context()
+
+    # Use existing page or open new one
+    if context.pages:
+        page = context.pages[-1]
+    else:
+        page = await context.new_page()
+
+    log.info(f"Connected — current page: {page.url}")
+    return browser, context, page
+
+
+# ─────────────────────────────────────────────────────────────
+# Waiting room
+# ─────────────────────────────────────────────────────────────
+
+async def wait_for_waiting_room(page: Page, timeout_minutes: int = 60) -> None:
+    deadline = time.time() + timeout_minutes * 60
+    log.info("Checking for Cloudflare Waiting Room …")
+
+    while time.time() < deadline:
+        html = await page.content()
+        in_queue = any(kw in html.lower() for kw in [
+            "waiting room", "you are in the queue", "queue position",
+            "estimated wait", "waitingroom", "cfwaitingroom", "waiting-room",
+        ])
+
+        if not in_queue:
+            log.info(f"Waiting room cleared — URL: {page.url}")
+            return
+
+        try:
+            loc = page.locator("[data-queue-position], .queue-position, #queuePosition")
+            pos = (await loc.first.inner_text()).strip() if await loc.count() > 0 else "unknown"
+            log.info(f"In waiting room — position: {pos}")
+        except Exception:
+            log.info("In waiting room — waiting for auto-redirect …")
+
+        await asyncio.sleep(15)
+
+    raise TimeoutError("Timed out waiting for waiting room to clear.")
+
+
+# ─────────────────────────────────────────────────────────────
+# CAPTCHA
+# ─────────────────────────────────────────────────────────────
+
+def _fastcaptcha_solve(image_bytes: bytes) -> str:
+    if not _FC_AVAILABLE:
+        raise RuntimeError("fastcaptcha-api not installed.")
+    if not FASTCAPTCHA_API_KEY:
+        raise RuntimeError("FASTCAPTCHA_API_KEY missing in .env")
+    client = FastCaptcha(api_key=FASTCAPTCHA_API_KEY)
+    b64    = base64.b64encode(image_bytes).decode("utf-8")
+    text   = client.solve_base64(b64)
+    log.info(f"FastCaptcha → '{text}'")
+    return text
+
+
+async def solve_captcha_on_page(page: Page) -> bool:
+    captcha_selectors = [
+        "img[src*='captcha' i]", "img[src*='Captcha' i]",
+        "img[src*='VerifyImage' i]", "img[src*='CaptchaImage' i]",
+        "img[alt*='captcha' i]",  "img[class*='captcha' i]",
+        "img[id*='captcha' i]",   ".captcha img", "#captcha img",
+    ]
+
+    captcha_loc = None
+    for sel in captcha_selectors:
+        loc = page.locator(sel)
+        if await loc.count() > 0:
+            captcha_loc = loc.first
+            log.info(f"CAPTCHA image detected: {sel}")
+            break
+
+    if not captcha_loc:
+        log.info("No image CAPTCHA — skipping.")
+        return True
+
+    try:
+        img_bytes = await captcha_loc.screenshot()
+    except Exception as e:
+        log.warning(f"CAPTCHA screenshot failed: {e}")
+        return False
+
+    try:
+        solution = _fastcaptcha_solve(img_bytes)
+    except Exception as e:
+        log.error(f"FastCaptcha error: {e}")
+        return False
+
+    if not solution:
+        log.error("Empty CAPTCHA solution.")
+        return False
+
+    input_selectors = [
+        "#CaptchaInputText", "#captchaText",
+        "input[name*='captcha' i]", "input[id*='captcha' i]",
+        "input[class*='captcha' i]", "input[placeholder*='captcha' i]",
+        "input[placeholder*='code' i]",
+    ]
+
+    for sel in input_selectors:
+        if await page.locator(sel).count() > 0:
+            await page.locator(sel).first.fill("")
+            await human_delay(100, 200)
+            await human_type(page, sel, solution)
+            log.info(f"CAPTCHA typed: '{solution}'")
+            return True
+
+    log.error("CAPTCHA input not found.")
+    return False
+
+
+# ─────────────────────────────────────────────────────────────
+# Login
+# ─────────────────────────────────────────────────────────────
+
+async def login(page: Page, username: str, password: str) -> bool:
+    log.info("Starting login …")
+
+    u_selectors = [
+        "#signInName", "#email", "input[name='signInName']",
+        "input[name='UserName']", "input[name='username']",
+        "input[name='email']",    "input[type='email']",
+        "input[id='UserName']",   "input[id='username']",
+        "input[placeholder*='username' i]", "input[placeholder*='email' i]",
+        "input[type='text']",
+    ]
+    p_selectors = [
+        "#password", "input[name='Password']", "input[name='password']",
+        "input[type='password']", "input[id='Password']",
+        "input[placeholder*='password' i]",
+    ]
+
+    u_combined = ", ".join(u_selectors)
+    p_combined = ", ".join(p_selectors)
+
+    try:
+        await page.wait_for_selector(u_combined, state="visible", timeout=30000)
+    except Exception:
+        log.error("Username field did not appear within 30s.")
+        return False
+
+    u_field = None
+    for s in u_selectors:
+        if await page.locator(s).count() > 0:
+            u_field = s
+            break
+
+    p_field = None
+    for s in p_selectors:
+        if await page.locator(s).count() > 0:
+            p_field = s
+            break
+
+    if not u_field:
+        log.error("Username field not found.")
+        return False
+    if not p_field:
+        log.error("Password field not found.")
+        return False
+
+    await human_type(page, u_field, username)
+    log.info(f"Typed username: {username}")
+    await human_type(page, p_field, password)
+    log.info("Typed password.")
+
+    if not await solve_captcha_on_page(page):
+        log.error("CAPTCHA failed.")
+        return False
+
+    await human_delay(300, 600)
+
+    signin_selectors = [
+        "input[type='submit'][value*='Sign' i]",
+        "input[type='submit'][value*='Log' i]",
+        "button[type='submit']",
+        "button:has-text('Sign In')",
+        "button:has-text('Login')",
+        "input[value='Login']",
+        "#loginButton", ".login-btn",
+    ]
+
+    clicked = False
+    for sel in signin_selectors:
+        if await page.locator(sel).count() > 0:
+            await human_click(page, sel)
+            log.info(f"Clicked Sign In: {sel}")
+            clicked = True
+            break
+
+    if not clicked:
+        log.error("Sign In button not found.")
+        return False
+
+    log.info("Waiting for login redirect ...")
+    try:
+        # Playwright Python's wait_for_url does not support lambda predicates.
+        # We manually poll for the URL to change away from the B2C login state.
+        for _ in range(45):
+            u = page.url.lower()
+            if "selfasserted" in u or not any(k in u for k in ["b2clogin", "login", "logon", "signin", "sign-in"]):
+                break
+            await asyncio.sleep(1)
+    except Exception:
+        pass
+
+    try:
+        url  = page.url
+        html = await page.inner_text("body")  # MUST use inner_text to avoid reading hidden DOM elements!
+    except Exception as e:
+        if page.is_closed() or "closed" in str(e).lower():
+            log.error("Page was unexpectedly closed!")
+            return False
+        log.info(f"Page navigating, couldn't read content ({e}) — assuming successful redirect.")
+        return True
+
+    if any(p in html.lower() for p in [
+        "invalid credentials", "incorrect password", "login failed",
+        "the user name or password", "invalid username",
+        "character", "match the image", "try again", "does not match", "captcha failed", "image captcha"
+    ]):
+        log.error("Login error / invalid CAPTCHA message on page. Aborting attempt and forcing refresh...")
+        return False
+
+    url_lower = url.lower()
+    if "selfasserted" not in url_lower and any(k in url_lower for k in ["logon", "login", "signin", "sign-in", "b2clogin"]):
+        log.error("Login still failed after initial submit. Aborting attempt.")
+        return False
+
+    log.info(f"Login successful — URL: {page.url}")
+    return True
+
+
+# ─────────────────────────────────────────────────────────────
+# Security question
+# ─────────────────────────────────────────────────────────────
+
+def load_security_answers() -> dict:
+    if not SECURITY_Q_FILE.exists():
+        return {}
+    with open(SECURITY_Q_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    data.pop("_comment", None)
+    return data
+
+
+def match_answer(question_text: str, answers: dict) -> str | None:
+    q = question_text.lower()
+    return next((v for k, v in answers.items() if k.lower() in q), None)
+
+
+async def handle_security_question(page: Page) -> bool:
+    await human_delay(1000, 2000)
+
+    q_selectors = [
+        "label[for*='SecurityAnswer' i]", "label[for*='security' i]",
+        ".security-question", ".question-text", "#securityQuestion", "legend",
+        "p:has-text('favourite')", "p:has-text('favorite')",
+        "p:has-text('maiden')",    "p:has-text('born')",
+        "p:has-text('pet')",       "p:has-text('school')",
+        "span:has-text('favourite')", "div.question",
+    ]
+
+    log.info("Waiting for security question to appear (up to 15s) …")
+    try:
+        combined_q = ", ".join(q_selectors)
+        await page.wait_for_selector(combined_q, state="visible", timeout=15000)
+    except Exception:
+        pass
+
+    answers = load_security_answers()
+    filled_any = False
+    
+    try:
+        log.info("Waiting for security question inputs (up to 15s) …")
+        await page.wait_for_selector("input:not([type='hidden']):not([type='submit']):not([type='button']):not([readonly]):not([disabled])", state="visible", timeout=15000)
+    except Exception:
+        pass
+        
+    try:
+        # Find all inputs that are editable (not hidden, disabled, or readonly) and are not buttons/checkboxes
+        inputs = page.locator("input:not([type='hidden']):not([type='submit']):not([type='button']):not([readonly]):not([disabled])")
+        count = await inputs.count()
+        
+        # Pull the entire text of the document in visual order
+        body_text = await page.inner_text("body")
+        questions = []
+        
+        for line in body_text.split('\n'):
+            line = line.strip()
+            if len(line) < 5: continue
+            
+            is_question = "?" in line and any(k in line.lower() for k in [
+                "favourite", "favorite", "born", "pet", "school", "maiden", "childhood", "car", "hero", "food"
+            ])
+            
+            if is_question and line not in questions:
+                questions.append(line)
+        
         for i in range(count):
-            lbl = labels.nth(i)
-            if await lbl.is_visible():
-                txt = (await lbl.text_content() or "").strip()
-                if txt:
-                    visible_labels.append(txt)
-        if visible_labels:
-            logger.info(f"[{customer_id}] Visible labels on current page: {visible_labels}")
-
-        answered = 0
-        for i in range(count):
-            label = labels.nth(i)
-
-            # Only look at visible labels
-            if not await label.is_visible():
+            input_loc = inputs.nth(i)
+            if not await input_loc.is_visible():
                 continue
-
-            label_text = (await label.text_content() or "").lower().strip()
-
-            # Find which keyword (if any) this label contains
-            matched_key = None
-            for keyword, csv_col in QUESTION_KEYWORD_MAP.items():
-                if keyword in label_text:
-                    matched_key = csv_col
-                    break
-
-            if not matched_key:
-                continue
-
-            answer = answers.get(matched_key, "").strip()
-            if not answer or answer.lower() == "na":
-                logger.warning(
-                    f"[{customer_id}] Security question about '{label_text}' found "
-                    f"but no answer in CSV column '{matched_key}'. Skipping."
-                )
-                continue
-
-            # Find the input that belongs to this label.
-            # Priority: label[for] → input[id], then nearest sibling/descendant input.
-            for_attr = await label.get_attribute("for")
-            if for_attr:
-                target_input = page.locator(f"input#{for_attr}").first
-            else:
-                target_input = label.locator("xpath=following-sibling::input | following-sibling::div//input").first
-
-            if not await target_input.is_visible():
-                logger.warning(f"[{customer_id}] Label '{label_text}' found but input is not visible.")
-                continue
-
-            logger.info(f"[{customer_id}] Answering security question: '{label_text}' → '{answer}'")
-            await target_input.fill(answer)
-            await page.wait_for_timeout(300)   # Tiny human-like pause between answers
-            answered += 1
-
-        if answered > 0:
-            logger.info(f"[{customer_id}] Answered {answered} security question(s). Clicking Continue...")
-            continue_btn = page.locator(
-                "#continue, "
-                "button:has-text('Continue'), "
-                "input[type='submit'][value*='Continue' i], "
-                "button[type='submit']"
-            ).first
-            await continue_btn.click()
-
-            # Wait for the final redirect away from the B2C auth domain
-            try:
-                await page.wait_for_url(
-                    lambda u: "b2clogin.com" not in u and "signin" not in u.lower(),
-                    timeout=TIMEOUT_MS,
-                )
-            except PlaywrightTimeout:
-                pass  # Will be caught by the Step 7 check
-
-            await page.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
+                
+            if i < len(questions):
+                textToMatch = questions[i]
+                answer = match_answer(textToMatch, answers)
+                if not answer:
+                    log.error(f"No answer found mapped for question: '{textToMatch}'")
+                    continue
+                    
+                await input_loc.fill("")
+                await human_delay(100, 200)
+                await input_loc.type(answer, delay=random.randint(50, 150))
+                log.info(f"Typed answer for: '{textToMatch}'")
+                filled_any = True
 
     except Exception as e:
-        # Non-fatal – Step 7 will confirm if login actually worked
-        logger.debug(f"[{customer_id}] Security questions helper error (non-fatal): {e}")
+        log.error(f"Error handling security inputs: {e}")
+
+    if not filled_any:
+        log.info("No security questions filled. Either none present or couldn't parse.")
+        return True
+
+    await human_delay(300, 600)
+
+    for sel in ["button[type='submit']", "input[type='submit']",
+                "button:has-text('Continue')", "button:has-text('Submit')",
+                "input[value='Continue']"]:
+        if await page.locator(sel).count() > 0:
+            await human_click(page, sel)
+            log.info("Security question submitted.")
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=15_000)
+            except Exception:
+                pass
+            return True
+
+    log.error("Submit button not found.")
+    return False
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Helper – reuse a saved session without logging in again
-# ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────
 
-async def open_existing_session(browser: Browser, customer_id: str) -> BrowserContext | None:
-    """
-    Loads a previously saved session file and returns an active BrowserContext.
-    No login is performed – the context is already authenticated.
-    """
-    session_path = os.path.join(SESSIONS_DIR, f"{customer_id}_session.json")
-    if not os.path.exists(session_path):
-        logger.warning(f"[{customer_id}] No saved session found at {session_path}")
-        return None
-    context = await browser.new_context(storage_state=session_path)
-    logger.info(f"[{customer_id}] Loaded saved session from {session_path}")
-    return context
+async def run() -> None:
+    missing = [k for k, v in {
+        "VISA_USERNAME": VISA_USERNAME,
+        "VISA_PASSWORD": VISA_PASSWORD,
+        "FASTCAPTCHA_API_KEY": FASTCAPTCHA_API_KEY,
+    }.items() if not v]
+    if missing:
+        log.error(f"Missing .env vars: {', '.join(missing)}")
+        sys.exit(1)
+
+    # Start Chrome in debug mode (or connect to existing)
+    ensure_chrome_debug_running()
+    await asyncio.sleep(2)  # give Chrome a moment to initialise
+
+    async with async_playwright() as pw:
+        browser, context, page = await connect_to_chrome(pw)
+
+        try:
+            # ── 1. & 2. Open site & wait ──────────────
+            cur_url = page.url.lower()
+            if any(k in cur_url for k in ["logon", "login", "signin", "b2clogin"]):
+                log.info("Already on login page — skipping initial navigation.")
+            else:
+                if "usvisascheduling.com" not in cur_url:
+                    log.info(f"→ Navigating to {BASE_URL}")
+                    await page.goto(BASE_URL, wait_until="domcontentloaded", timeout=120_000)
+                    await human_delay(2000, 4000)
+
+                await wait_for_waiting_room(page, timeout_minutes=60)
+                await human_delay(1000, 2000)
+
+                # ── 3. Wait for login page ──────────────
+                log.info("Waiting for automatic redirect to login page (up to 5 minutes) …")
+                deadline = time.time() + 300
+                while time.time() < deadline:
+                    if any(k in page.url.lower() for k in ["logon", "login", "signin"]):
+                        log.info("Arrived at login page.")
+                        break
+                    await asyncio.sleep(5)
+                else:
+                    log.warning("Did not auto-redirect in 5 minutes. Trying manual navigation …")
+                    await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=120_000)
+                    await wait_for_waiting_room(page, timeout_minutes=30)
+                
+            await human_delay(1000, 2000)
+
+            # ── 4. Login ──────────────────────────────
+            success = False
+            for attempt in range(1, 4):
+                log.info(f"Login attempt {attempt}/3")
+                success = await login(page, VISA_USERNAME, VISA_PASSWORD)
+                if success:
+                    break
+                if attempt < 3:
+                    log.info("Retrying in 5 s …")
+                    await asyncio.sleep(5)
+                    await page.reload(wait_until="domcontentloaded")
+                    await human_delay(1500, 3000)
+
+            if not success:
+                log.error("All login attempts failed.")
+                await page.screenshot(path="login_failed.png")
+                return
+
+            # ── 5. Security question ──────────────────
+            await human_delay(1500, 3000)
+            if not await handle_security_question(page):
+                log.error("Security question failed.")
+                await page.screenshot(path="security_question_failed.png")
+                return
+
+            # ── Done ──────────────────────────────────
+            log.info("=" * 60)
+            log.info("✅  All steps complete!")
+            log.info(f"   URL: {page.url}")
+            log.info("=" * 60)
+            log.info("Browser staying open — press Ctrl+C to exit.")
+            await asyncio.Event().wait()
+
+        except KeyboardInterrupt:
+            log.info("Stopped by user.")
+        except Exception as e:
+            log.error(f"Error: {e}", exc_info=True)
+            try:
+                await page.screenshot(path="error_screenshot.png")
+                log.info("Screenshot → error_screenshot.png")
+            except Exception:
+                pass
+
+
+# ─────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    asyncio.run(run())

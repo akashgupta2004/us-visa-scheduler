@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Chrome profiles (large directories)
+chrome_profile/
+chrome_profile_pragadeesh28/
+chrome_profile_rohan/
+
+# Sensitive/local data
+security_questions.json
+slot_alert_state.json
+
+# Test and temporary files
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+*.tmp
+
+# OS specific
+.DS_Store
+Thumbs.db
+*.bak
+
+
+
+# CSV/data analysis files (optional - comment out if you want to track these)
+# *.csv

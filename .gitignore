@@ -48,6 +48,7 @@ chrome_profile_pragadeesh28/
 chrome_profile_rohan/
 
 # Sensitive/local data
+.env
 security_questions.json
 slot_alert_state.json
 

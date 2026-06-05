@@ -1,1011 +1,740 @@
-"""
-=============================================================
-  Visa Bot GUI — gui.py
-  A complete desktop control panel for the US Visa Bot system.
-  Tabs: Configure | Live Slots | Slot Monitor | Bot2 (OFC)
-=============================================================
-"""
-
-import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
-import calendar
-import json
-import csv
 import os
 import sys
+import json
 import subprocess
 import threading
-import queue
-import requests
-from pathlib import Path
+import tkinter as tk
 from datetime import datetime
+from tkinter import ttk, messagebox, scrolledtext
+from pathlib import Path
+from tkcalendar import DateEntry
 
 # ─── Script Paths ────────────────────────────────────────────
-BASE_DIR      = Path(__file__).parent
-ENV_FILE      = BASE_DIR / ".env"
-SEC_Q_FILE    = BASE_DIR / "security_questions.json"
-CSV_FILE      = BASE_DIR / "slot_notification.csv"
-MONITOR_SCRIPT = BASE_DIR / "slot_monitor_qualified (1).py"
-BOT2_SCRIPT   = BASE_DIR / "bot2_ofc_booking.py"
-BOT_SCRIPT    = BASE_DIR / "bot.py"
+BASE_DIR = Path(__file__).parent
+ACCOUNTS_FILE = BASE_DIR / "accounts.json"
+ORCHESTRATOR_SCRIPT = BASE_DIR / "src" / "orchestrator.py"
 
-CHROME_PATHS = [
-    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-]
-CDP_PORT = 9222
-
-# ─── VisaSlots API ───────────────────────────────────────────
-API_URL = "https://app.checkvisaslots.com/slots/v3"
-API_HEADERS = {
-    "accept": "*/*",
-    "extversion": "4.7.0.2",
-    "origin": "chrome-extension://beepaenfejnphdgnkmccjcfiieihhogl",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "x-api-key": "4XYRAN",
-}
-
-CITY_OPTIONS = ["CHENNAI", "MUMBAI", "HYDERABAD", "DELHI", "KOLKATA", "ANY"]
+CITY_OPTIONS = ["CHENNAI", "MUMBAI", "HYDERABAD", "DELHI", "KOLKATA"]
 
 # ─── Colors ──────────────────────────────────────────────────
-BG           = "#1e1e2e"
-SURFACE      = "#2a2a3e"
-ACCENT       = "#7c3aed"
-ACCENT_HOVER = "#6d28d9"
+BG           = "#0f172a"
+SURFACE      = "#1e293b"
+ACCENT       = "#3b82f6"
+ACCENT_HOVER = "#2563eb"
 SUCCESS      = "#22c55e"
 DANGER       = "#ef4444"
 WARNING      = "#f59e0b"
-TEXT         = "#e2e8f0"
+TEXT         = "#f8fafc"
 SUBTEXT      = "#94a3b8"
-ENTRY_BG     = "#16213e"
-ENTRY_FG     = "#e2e8f0"
-BORDER       = "#3f3f5a"
+ENTRY_BG     = "#0f172a"
+ENTRY_FG     = "#f8fafc"
+BORDER       = "#334155"
 
 # ─────────────────────────────────────────────────────────────
-# Helpers
+# Account Manager & Orchestrator App
 # ─────────────────────────────────────────────────────────────
 
-def read_env() -> dict:
-    env = {}
-    if ENV_FILE.exists():
-        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                env[k.strip()] = v.strip()
-    return env
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("VisaBot - Orchestrator & Accounts Manager")
+        self.geometry("1000x850")
+        self.configure(bg=BG)
 
-def write_env(env: dict):
-    lines = []
-    if ENV_FILE.exists():
-        for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-            l = line.strip()
-            if l and not l.startswith("#") and "=" in l:
-                k = l.split("=", 1)[0].strip()
-                if k in env:
-                    lines.append(f"{k}={env.pop(k)}")
-                else:
-                    lines.append(line)
-            else:
-                lines.append(line)
-    for k, v in env.items():
-        lines.append(f"{k}={v}")
-    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.accounts = []
+        self.current_account_idx = None
+        self.orchestrator_proc = None
 
-def read_security_questions() -> dict:
-    if SEC_Q_FILE.exists():
-        try:
-            return json.loads(SEC_Q_FILE.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            pass
-    return {}
+        self._configure_styles()
+        self._load_accounts()
+        self._build_ui()
 
-def write_security_questions(data: dict):
-    SEC_Q_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    def _configure_styles(self):
+        style = ttk.Style(self)
+        style.theme_use("clam")
 
-def read_csv_rows() -> list[dict]:
-    defaults = {"customer_name": "", "ofc_location": "CHENNAI",
-                "consular_location": "CHENNAI", "need_before": "30 Jun 2026", "min_slots": "2"}
-    if CSV_FILE.exists():
-        with open(CSV_FILE, newline="", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
-            if rows:
-                return [{**defaults, **r} for r in rows]
-    return [defaults.copy()]
+        # General
+        style.configure(".", background=BG, foreground=TEXT, font=("Segoe UI", 10))
+        style.configure("TFrame", background=BG)
+        style.configure("Surface.TFrame", background=SURFACE)
+        style.configure("Surface.TLabel", background=SURFACE, foreground=TEXT)
 
-def write_csv_rows(rows: list[dict]):
-    fieldnames = ["customer_name","ofc_location","consular_location","need_before","min_slots"]
-    with open(CSV_FILE, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({k: row.get(k, "") for k in fieldnames})
+        # Notebook
+        style.configure("TNotebook", background=BG, borderwidth=0)
+        style.configure("TNotebook.Tab", background=SURFACE, foreground=TEXT, 
+                        padding=(15, 8), borderwidth=0, font=("Segoe UI", 10, "bold"))
+        style.map("TNotebook.Tab",
+                  background=[("selected", ACCENT)],
+                  foreground=[("selected", "#ffffff")])
 
-# ─────────────────────────────────────────────────────────────
-# Calendar Date Picker Popup
-# ─────────────────────────────────────────────────────────────
+        # Buttons
+        style.configure("Primary.TButton", background=ACCENT, foreground="#ffffff", 
+                        font=("Segoe UI", 10, "bold"), padding=8, borderwidth=0)
+        style.map("Primary.TButton", background=[("active", ACCENT_HOVER)])
 
-MONTH_NAMES = ["January","February","March","April","May","June",
-               "July","August","September","October","November","December"]
+        style.configure("Success.TButton", background=SUCCESS, foreground="#ffffff", 
+                        font=("Segoe UI", 10, "bold"), padding=8, borderwidth=0)
+        style.map("Success.TButton", background=[("active", "#16a34a")])
 
-class CalendarPicker(tk.Toplevel):
-    """Dark-themed calendar popup. Calls on_select(date_str) with 'dd Mon yyyy'."""
+        style.configure("Danger.TButton", background=DANGER, foreground="#ffffff", 
+                        font=("Segoe UI", 10, "bold"), padding=8, borderwidth=0)
+        style.map("Danger.TButton", background=[("active", "#dc2626")])
 
-    def __init__(self, parent, on_select, initial_date=None):
-        super().__init__(parent)
-        self.on_select = on_select
-        self.overrideredirect(True)          # borderless
-        self.configure(bg=SURFACE)
-        self.attributes("-topmost", True)
+        # Pill style for Checkbuttons
+        style.configure("Toolbutton", background=ENTRY_BG, foreground=TEXT, 
+                        font=("Segoe UI", 9), padding=(10, 5), borderwidth=1, bordercolor=BORDER)
+        style.map("Toolbutton",
+                  background=[("selected", SUCCESS), ("active", SURFACE)],
+                  foreground=[("selected", "#ffffff"), ("active", TEXT)])
 
-        now = datetime.now()
-        if initial_date:
+        # Labels & Entries
+        style.configure("TLabel", background=BG, foreground=TEXT)
+        style.configure("Header.TLabel", font=("Segoe UI", 14, "bold"), background=SURFACE, foreground=TEXT)
+        style.configure("Subhead.TLabel", font=("Segoe UI", 11, "bold"), background=SURFACE, foreground=SUBTEXT)
+        style.configure("DateEntry.TEntry", fieldbackground=ENTRY_BG, foreground=ENTRY_FG, insertcolor=TEXT)
+        style.map("DateEntry.TEntry",
+                  fieldbackground=[("readonly", ENTRY_BG)],
+                  foreground=[("readonly", ENTRY_FG)])
+
+    def _load_accounts(self):
+        if ACCOUNTS_FILE.exists():
             try:
-                parsed = datetime.strptime(initial_date, "%d %b %Y")
-                self._year  = parsed.year
-                self._month = parsed.month
-            except Exception:
-                self._year, self._month = now.year, now.month
+                with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+                    self.accounts = json.load(f)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to parse accounts.json:\n{e}")
+                self.accounts = []
         else:
-            self._year, self._month = now.year, now.month
+            self.accounts = []
 
-        self._build()
-        self._draw()
-
-        # Position below parent widget
-        self.update_idletasks()
-        px = parent.winfo_rootx()
-        py = parent.winfo_rooty() + parent.winfo_height()
-        self.geometry(f"+{px}+{py}")
-
-        # Click outside to close
-        self.bind("<FocusOut>", self._on_focus_out)
-        self.focus_set()
-
-    def _build(self):
-        # ── Header (prev / month-year / next) ──
-        hdr = tk.Frame(self, bg=ACCENT, pady=6)
-        hdr.pack(fill="x")
-        tk.Button(hdr, text="‹", command=self._prev_month,
-                  bg=ACCENT, fg="white", activebackground=ACCENT_HOVER,
-                  relief="flat", font=("Segoe UI", 12, "bold"),
-                  cursor="hand2", bd=0, padx=8).pack(side="left")
-        tk.Button(hdr, text="›", command=self._next_month,
-                  bg=ACCENT, fg="white", activebackground=ACCENT_HOVER,
-                  relief="flat", font=("Segoe UI", 12, "bold"),
-                  cursor="hand2", bd=0, padx=8).pack(side="right")
-        self._header_lbl = tk.Label(hdr, text="", font=("Segoe UI", 10, "bold"),
-                                    fg="white", bg=ACCENT)
-        self._header_lbl.pack()
-
-        # ── Day-of-week row ──
-        dow_frame = tk.Frame(self, bg=SURFACE, pady=4)
-        dow_frame.pack(fill="x", padx=4)
-        for d in ["Su","Mo","Tu","We","Th","Fr","Sa"]:
-            tk.Label(dow_frame, text=d, width=3,
-                     font=("Segoe UI", 8, "bold"),
-                     fg=SUBTEXT, bg=SURFACE).pack(side="left", padx=2)
-
-        # ── Day grid ──
-        self._grid_frame = tk.Frame(self, bg=SURFACE)
-        self._grid_frame.pack(padx=4, pady=(0, 6))
-
-    def _draw(self):
-        for w in self._grid_frame.winfo_children():
-            w.destroy()
-        self._header_lbl.config(text=f"{MONTH_NAMES[self._month-1]}  {self._year}")
-
-        cal = calendar.monthcalendar(self._year, self._month)
-        today = datetime.now()
-
-        for week in cal:
-            row = tk.Frame(self._grid_frame, bg=SURFACE)
-            row.pack()
-            for day in week:
-                if day == 0:
-                    tk.Label(row, text="", width=3, bg=SURFACE).pack(side="left", padx=2, pady=2)
-                else:
-                    is_today = (day == today.day and self._month == today.month
-                                and self._year == today.year)
-                    bg_col  = ACCENT if is_today else SURFACE
-                    fg_col  = "white"  if is_today else TEXT
-                    btn = tk.Button(
-                        row, text=str(day), width=3,
-                        bg=bg_col, fg=fg_col,
-                        activebackground=ACCENT_HOVER, activeforeground="white",
-                        relief="flat", font=("Segoe UI", 9),
-                        cursor="hand2", bd=0,
-                        command=lambda d=day: self._pick(d)
-                    )
-                    btn.pack(side="left", padx=2, pady=2)
-
-    def _prev_month(self):
-        if self._month == 1:
-            self._month, self._year = 12, self._year - 1
-        else:
-            self._month -= 1
-        self._draw()
-
-    def _next_month(self):
-        if self._month == 12:
-            self._month, self._year = 1, self._year + 1
-        else:
-            self._month += 1
-        self._draw()
-
-    def _pick(self, day):
-        date_str = datetime(self._year, self._month, day).strftime("%d %b %Y")
-        self.on_select(date_str)
-        self.destroy()
-
-    def _on_focus_out(self, event):
-        self.after(100, self._check_focus)
-
-    def _check_focus(self):
+    def _save_accounts(self):
         try:
-            focused = self.focus_get()
-            if focused is None or str(focused) == str(self):
-                pass
-            else:
-                self.destroy()
-        except Exception:
-            try:
-                self.destroy()
-            except Exception:
-                pass
-
-
-# ─────────────────────────────────────────────────────────────
-# Reusable UI Components
-# ─────────────────────────────────────────────────────────────
-
-def styled_label(parent, text, font=("Segoe UI", 10), fg=TEXT, **kw):
-    return tk.Label(parent, text=text, font=font, fg=fg, bg=BG, **kw)
-
-def section_label(parent, text):
-    f = tk.Frame(parent, bg=BG)
-    tk.Label(f, text=text, font=("Segoe UI", 11, "bold"), fg=ACCENT, bg=BG).pack(side="left")
-    tk.Frame(f, bg=BORDER, height=1).pack(side="left", fill="x", expand=True, padx=(10,0), pady=6)
-    return f
-
-def styled_entry(parent, textvariable=None, show=None, width=30):
-    e = tk.Entry(parent, textvariable=textvariable, show=show, width=width,
-                 bg=ENTRY_BG, fg=ENTRY_FG, insertbackground=ACCENT,
-                 relief="flat", font=("Segoe UI", 10),
-                 highlightthickness=1, highlightcolor=ACCENT, highlightbackground=BORDER)
-    return e
-
-def styled_combo(parent, values, textvariable=None, width=18):
-    style = ttk.Style()
-    style.configure("Custom.TCombobox",
-                    fieldbackground=ENTRY_BG, background=ENTRY_BG,
-                    foreground=ENTRY_FG, selectbackground=ACCENT,
-                    arrowcolor=ACCENT)
-    c = ttk.Combobox(parent, values=values, textvariable=textvariable,
-                     width=width, state="readonly", style="Custom.TCombobox",
-                     font=("Segoe UI", 10))
-    return c
-
-def styled_button(parent, text, command, bg=ACCENT, fg="white", padx=18, pady=6):
-    btn = tk.Button(parent, text=text, command=command,
-                    bg=bg, fg=fg, activebackground=ACCENT_HOVER, activeforeground="white",
-                    font=("Segoe UI", 10, "bold"), relief="flat", cursor="hand2",
-                    padx=padx, pady=pady, bd=0)
-    btn.bind("<Enter>", lambda e: btn.config(bg=ACCENT_HOVER))
-    btn.bind("<Leave>", lambda e: btn.config(bg=bg))
-    return btn
-
-def status_dot(parent, color=SUCCESS):
-    c = tk.Canvas(parent, width=10, height=10, bg=SURFACE, highlightthickness=0)
-    c.create_oval(1, 1, 9, 9, fill=color, outline="")
-    return c
-
-def log_widget(parent):
-    st = scrolledtext.ScrolledText(parent, bg="#0d0d1a", fg="#a0e982",
-                                   font=("Consolas", 9), relief="flat",
-                                   insertbackground=ACCENT, wrap="word",
-                                   state="disabled", height=20)
-    st.tag_configure("WARN",    foreground=WARNING)
-    st.tag_configure("ERROR",   foreground=DANGER)
-    st.tag_configure("SUCCESS", foreground=SUCCESS)
-    st.tag_configure("INFO",    foreground="#a0e982")
-    return st
-
-def log_append(widget, text):
-    widget.config(state="normal")
-    tag = "INFO"
-    if any(x in text for x in ["❌", "error", "Error", "failed", "HTTP 4"]):
-        tag = "ERROR"
-    elif any(x in text for x in ["⚠️", "warn", "Warning"]):
-        tag = "WARN"
-    elif any(x in text for x in ["✅", "BOOKED", "Alert sent"]):
-        tag = "SUCCESS"
-    widget.insert("end", text + "\n", tag)
-    widget.see("end")
-    widget.config(state="disabled")
-
-# ─────────────────────────────────────────────────────────────
-# Tab 1 — Configuration
-# ─────────────────────────────────────────────────────────────
-
-class ConfigTab(tk.Frame):
-    def __init__(self, parent):
-        super().__init__(parent, bg=BG)
-        self.customer_rows = []   # list of dicts with tk vars
-        self._build()
-        self._load()
-
-    def _build(self):
-        canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
-        scroll = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        self.inner = tk.Frame(canvas, bg=BG)
-        self.inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        p = self.inner
-
-        # ── Credentials ─────
-        section_label(p, "  Visa Credentials").pack(fill="x", padx=20, pady=(20, 4))
-        row = tk.Frame(p, bg=BG); row.pack(fill="x", padx=20, pady=4)
-        styled_label(row, "Username:", width=18, anchor="w").pack(side="left")
-        self.username_var = tk.StringVar()
-        styled_entry(row, textvariable=self.username_var, width=32).pack(side="left", padx=6)
-
-        row2 = tk.Frame(p, bg=BG); row2.pack(fill="x", padx=20, pady=4)
-        styled_label(row2, "Password:", width=18, anchor="w").pack(side="left")
-        self.password_var = tk.StringVar()
-        self.pw_entry = styled_entry(row2, textvariable=self.password_var, show="●", width=32)
-        self.pw_entry.pack(side="left", padx=6)
-        self.show_pw = tk.BooleanVar(value=False)
-        tk.Checkbutton(row2, text="Show", variable=self.show_pw, command=self._toggle_pw,
-                       bg=BG, fg=SUBTEXT, activebackground=BG, selectcolor=SURFACE,
-                       font=("Segoe UI", 9)).pack(side="left")
-
-        # ── Security Questions ─────
-        section_label(p, "  Security Question Answers").pack(fill="x", padx=20, pady=(18, 4))
-        self.sq_entries = {}
-        for label_text, key in [
-            ("Favourite Food", "favourite food"),
-            ("Mother's Maiden Name", "mother's maiden name"),
-            ("City", "city were you born"),
-        ]:
-            r = tk.Frame(p, bg=BG); r.pack(fill="x", padx=20, pady=4)
-            styled_label(r, label_text + ":", width=22, anchor="w").pack(side="left")
-            var = tk.StringVar()
-            styled_entry(r, textvariable=var, width=26).pack(side="left", padx=6)
-            self.sq_entries[key] = var
-
-        # ── Booking Criteria — Multi-Customer Table ─────
-        section_label(p, "  Booking Criteria (Customers)").pack(fill="x", padx=20, pady=(18, 4))
-
-        # Table header
-        hdr = tk.Frame(p, bg=SURFACE)
-        hdr.pack(fill="x", padx=20, pady=(4, 0))
-        headers = [("Customer Name", 16), ("OFC City", 12), ("Consular City", 12),
-                   ("Need Before", 13), ("Min Slots", 6), ("", 3)]
-        for txt, w in headers:
-            tk.Label(hdr, text=txt, width=w, font=("Segoe UI", 9, "bold"),
-                     fg=TEXT, bg=SURFACE, anchor="w").pack(side="left", padx=2, pady=4)
-
-        # Scrollable customer rows container
-        self._cust_frame = tk.Frame(p, bg=BG)
-        self._cust_frame.pack(fill="x", padx=20, pady=2)
-
-        # Add customer button
-        btn_row = tk.Frame(p, bg=BG); btn_row.pack(fill="x", padx=20, pady=(4, 2))
-        styled_button(btn_row, "➕  Add Customer", self._add_customer_row, bg="#059669", padx=14, pady=6).pack(side="left")
-
-        # ── Save Button ─────
-        save_row = tk.Frame(p, bg=BG); save_row.pack(pady=16)
-        styled_button(save_row, "💾  Save All Settings", self._save, padx=24, pady=10).pack()
-        self.status_lbl = styled_label(p, "", fg=SUCCESS)
-        self.status_lbl.pack()
-
-    def _add_customer_row(self, data: dict | None = None):
-        defaults = data or {"customer_name": "", "ofc_location": "CHENNAI",
-                            "consular_location": "CHENNAI", "need_before": "30 Jun 2026", "min_slots": "2"}
-        row_frame = tk.Frame(self._cust_frame, bg=BG)
-        row_frame.pack(fill="x", pady=1)
-
-        name_var = tk.StringVar(value=defaults.get("customer_name", ""))
-        styled_entry(row_frame, textvariable=name_var, width=16).pack(side="left", padx=2)
-
-        ofc_var = tk.StringVar(value=defaults.get("ofc_location", "CHENNAI"))
-        styled_combo(row_frame, CITY_OPTIONS, textvariable=ofc_var, width=10).pack(side="left", padx=2)
-
-        consular_var = tk.StringVar(value=defaults.get("consular_location", "CHENNAI"))
-        styled_combo(row_frame, CITY_OPTIONS, textvariable=consular_var, width=10).pack(side="left", padx=2)
-
-        date_var = tk.StringVar(value=defaults.get("need_before", "30 Jun 2026"))
-        date_entry = styled_entry(row_frame, textvariable=date_var, width=11)
-        date_entry.pack(side="left", padx=(2, 0))
-        cal_btn = tk.Button(
-            row_frame, text="📅", bg=ACCENT, fg="white", activebackground=ACCENT_HOVER,
-            relief="flat", font=("Segoe UI", 9), cursor="hand2", padx=4, pady=1, bd=0,
-            command=lambda: CalendarPicker(cal_btn, on_select=lambda d: date_var.set(d), initial_date=date_var.get())
-        )
-        cal_btn.pack(side="left")
-
-        minslots_var = tk.StringVar(value=str(defaults.get("min_slots", "2")))
-        styled_entry(row_frame, textvariable=minslots_var, width=5).pack(side="left", padx=2)
-
-        entry = {"frame": row_frame, "name": name_var, "ofc": ofc_var,
-                 "consular": consular_var, "date": date_var, "minslots": minslots_var}
-
-        remove_btn = tk.Button(
-            row_frame, text="✕", bg=DANGER, fg="white", activebackground="#dc2626",
-            relief="flat", font=("Segoe UI", 9, "bold"), cursor="hand2",
-            padx=6, pady=1, bd=0,
-            command=lambda e=entry: self._remove_customer_row(e)
-        )
-        remove_btn.pack(side="left", padx=4)
-
-        self.customer_rows.append(entry)
-
-    def _remove_customer_row(self, entry):
-        if len(self.customer_rows) <= 1:
-            return   # keep at least one row
-        entry["frame"].destroy()
-        self.customer_rows.remove(entry)
-
-    def _open_calendar(self):
-        CalendarPicker(
-            self._cal_btn,
-            on_select=lambda d: self.date_var.set(d),
-            initial_date=self.date_var.get()
-        )
-
-    def _toggle_pw(self):
-        self.pw_entry.config(show="" if self.show_pw.get() else "●")
-
-    def _load(self):
-        env = read_env()
-        self.username_var.set(env.get("VISA_USERNAME", ""))
-        self.password_var.set(env.get("VISA_PASSWORD", ""))
-
-        sq = read_security_questions()
-        for key, var in self.sq_entries.items():
-            val = sq.get(key, "")
-            var.set("" if val == "NA" else val)
-
-        # Load multiple customers from CSV
-        csv_rows = read_csv_rows()
-        for row_data in csv_rows:
-            self._add_customer_row(row_data)
-
-    def _save(self):
-        # Save credentials
-        write_env({
-            "VISA_USERNAME": self.username_var.get().strip(),
-            "VISA_PASSWORD": self.password_var.get().strip(),
-        })
-
-        # Save security questions
-        sq = read_security_questions()
-        for key, var in self.sq_entries.items():
-            val = var.get().strip()
-            sq[key] = val if val else "NA"
-        write_security_questions(sq)
-
-        # Save all customer rows to CSV
-        rows = []
-        for entry in self.customer_rows:
-            rows.append({
-                "customer_name": entry["name"].get().strip(),
-                "ofc_location": entry["ofc"].get(),
-                "consular_location": entry["consular"].get(),
-                "need_before": entry["date"].get().strip(),
-                "min_slots": entry["minslots"].get().strip() or "1",
-            })
-        write_csv_rows(rows)
-
-        self.status_lbl.config(text=f"✅ Saved {len(rows)} customer(s) successfully!", fg=SUCCESS)
-        self.after(3000, lambda: self.status_lbl.config(text=""))
-
-
-# ─────────────────────────────────────────────────────────────
-# Tab 2 — Live Slots Viewer
-# ─────────────────────────────────────────────────────────────
-
-class SlotsTab(tk.Frame):
-    def __init__(self, parent):
-        super().__init__(parent, bg=BG)
-        self._build()
-
-    def _build(self):
-        top = tk.Frame(self, bg=BG); top.pack(fill="x", padx=20, pady=(20, 10))
-        styled_label(top, "Live Available Slots", font=("Segoe UI", 13, "bold"), fg=TEXT).pack(side="left")
-        styled_button(top, "🔄  Refresh", self._fetch, padx=16, pady=7).pack(side="right")
-
-        self.status_bar = styled_label(self, "Click Refresh to fetch latest slots.", fg=SUBTEXT)
-        self.status_bar.pack(padx=20, anchor="w")
-
-        cols = ("Location", "Type", "Earliest Date", "Slots")
-        container = tk.Frame(self, bg=BG); container.pack(fill="both", expand=True, padx=20, pady=10)
-
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Treeview", background=SURFACE, foreground=TEXT, fieldbackground=SURFACE,
-                        rowheight=28, font=("Segoe UI", 10))
-        style.configure("Treeview.Heading", background=ACCENT, foreground="white",
-                        font=("Segoe UI", 10, "bold"), relief="flat")
-        style.map("Treeview", background=[("selected", ACCENT)])
-
-        self.tree = ttk.Treeview(container, columns=cols, show="headings", style="Treeview")
-        vsb = ttk.Scrollbar(container, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        self.tree.pack(fill="both", expand=True)
-
-        widths = [200, 120, 160, 80]
-        for col, w in zip(cols, widths):
-            self.tree.heading(col, text=col)
-            self.tree.column(col, width=w, anchor="center")
-
-        self.tree.tag_configure("available", background="#1a3a2a", foreground="#86efac")
-        self.tree.tag_configure("empty", background=SURFACE, foreground=SUBTEXT)
-
-    def _fetch(self):
-        self.status_bar.config(text="⏳ Fetching...", fg=WARNING)
-        self.tree.delete(*self.tree.get_children())
-        threading.Thread(target=self._do_fetch, daemon=True).start()
-
-    def _do_fetch(self):
-        try:
-            r = requests.get(API_URL, headers=API_HEADERS, timeout=15)
-            if r.status_code == 429:
-                self.after(0, lambda: self.status_bar.config(
-                    text="⚠️ Rate limited (HTTP 429). Switch IP or wait until tomorrow.", fg=DANGER))
-                return
-            r.raise_for_status()
-            data = r.json()
-            slots = data.get("slotDetails", [])
-            self.after(0, lambda: self._populate(slots))
-        except Exception as e:
-            self.after(0, lambda: self.status_bar.config(text=f"❌ Error: {e}", fg=DANGER))
-
-    def _populate(self, slots):
-        self.tree.delete(*self.tree.get_children())
-        available_count = 0
-        for s in sorted(slots, key=lambda x: x.get("visa_location", "")):
-            loc = s.get("visa_location", "—")
-            kind = "OFC (Biometrics)" if "VAC" in loc.upper() else "Consular"
-            date = s.get("start_date", "—") or "—"
-            count = s.get("slots", 0)
-            tag = "available" if int(count or 0) > 0 else "empty"
-            if int(count or 0) > 0:
-                available_count += 1
-            self.tree.insert("", "end", values=(loc, kind, date, count), tags=(tag,))
-        now = datetime.now().strftime("%H:%M:%S")
-        self.status_bar.config(
-            text=f"✅ {len(slots)} entries fetched at {now}. {available_count} locations have available slots.",
-            fg=SUCCESS if available_count > 0 else SUBTEXT)
-
-
-# ─────────────────────────────────────────────────────────────
-# Sub-process Tab (base for Monitor + Bot2)
-# ─────────────────────────────────────────────────────────────
-
-class ProcessTab(tk.Frame):
-    def __init__(self, parent, script_path: Path, title: str, description: str):
-        super().__init__(parent, bg=BG)
-        self.script_path = script_path
-        self.process = None
-        self.log_q = queue.Queue()
-        self._build(title, description)
-
-    def _build(self, title, description):
-        header = tk.Frame(self, bg=SURFACE); header.pack(fill="x")
-        tk.Label(header, text=title, font=("Segoe UI", 14, "bold"),
-                 fg=TEXT, bg=SURFACE, pady=12, padx=20).pack(side="left")
-        self.dot = status_dot(header, color=SUBTEXT)
-        self.dot.pack(side="left", padx=4)
-        self.status_label = tk.Label(header, text="Stopped", font=("Segoe UI", 9),
-                                     fg=SUBTEXT, bg=SURFACE)
-        self.status_label.pack(side="left")
-
-        desc_row = tk.Frame(self, bg=BG); desc_row.pack(fill="x", padx=20, pady=(12,4))
-        styled_label(desc_row, description, fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
-
-        btn_row = tk.Frame(self, bg=BG); btn_row.pack(fill="x", padx=20, pady=8)
-        self.start_btn = styled_button(btn_row, "▶  Start", self.start, bg=SUCCESS, padx=20, pady=8)
-        self.start_btn.pack(side="left", padx=(0, 10))
-        self.stop_btn = styled_button(btn_row, "⏹  Stop", self.stop, bg=DANGER, padx=20, pady=8)
-        self.stop_btn.pack(side="left")
-        self.stop_btn.config(state="disabled")
-        styled_button(btn_row, "🗑  Clear Log", self._clear_log, bg=SURFACE, padx=16, pady=8).pack(side="right")
-
-        log_frame = tk.Frame(self, bg=BG); log_frame.pack(fill="both", expand=True, padx=20, pady=(0,16))
-        self.log = log_widget(log_frame)
-        self.log.pack(fill="both", expand=True)
-
-    def _set_status(self, running: bool):
-        if running:
-            self.dot.delete("all"); self.dot.create_oval(1,1,9,9, fill=SUCCESS, outline="")
-            self.status_label.config(text="Running", fg=SUCCESS)
-            self.start_btn.config(state="disabled")
-            self.stop_btn.config(state="normal")
-        else:
-            self.dot.delete("all"); self.dot.create_oval(1,1,9,9, fill=SUBTEXT, outline="")
-            self.status_label.config(text="Stopped", fg=SUBTEXT)
-            self.start_btn.config(state="normal")
-            self.stop_btn.config(state="disabled")
-
-    def start(self):
-        if self.process and self.process.poll() is None:
-            return
-        log_append(self.log, f"[{datetime.now():%H:%M:%S}] Starting {self.script_path.name}…")
-        try:
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            self.process = subprocess.Popen(
-                [sys.executable, "-u", str(self.script_path)],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                cwd=str(BASE_DIR),
-                text=True, encoding="utf-8", errors="replace",
-                bufsize=1,
-                env=env,
-            )
-            self._set_status(True)
-            threading.Thread(target=self._stream_output, daemon=True).start()
-            self._poll_queue()
-        except Exception as e:
-            log_append(self.log, f"❌ Failed to start: {e}")
-
-    def stop(self):
-        if self.process:
-            try:
-                self.process.terminate()
-            except Exception:
-                pass
-            self.process = None
-        self._set_status(False)
-        log_append(self.log, f"[{datetime.now():%H:%M:%S}] Process stopped by user.")
-
-    def _stream_output(self):
-        try:
-            for line in iter(self.process.stdout.readline, ""):
-                self.log_q.put(line.rstrip())
-            self.process.stdout.close()
-        except Exception:
-            pass
-        finally:
-            self.log_q.put("__EXIT__")
-
-    def _poll_queue(self):
-        try:
-            while True:
-                line = self.log_q.get_nowait()
-                if line == "__EXIT__":
-                    self._set_status(False)
-                    log_append(self.log, f"[{datetime.now():%H:%M:%S}] Process exited.")
-                    return
-                log_append(self.log, line)
-        except queue.Empty:
-            pass
-        self.after(200, self._poll_queue)
-
-    def _clear_log(self):
-        self.log.config(state="normal")
-        self.log.delete("1.0", "end")
-        self.log.config(state="disabled")
-
-
-# ─────────────────────────────────────────────────────────────
-# Chrome Launcher Helper
-# ─────────────────────────────────────────────────────────────
-
-import socket
-
-def _is_chrome_debug_running(port: int) -> bool:
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.accounts, f, indent=2)
             return True
-    except OSError:
-        return False
-
-def _find_chrome_exe() -> str | None:
-    for p in CHROME_PATHS:
-        if os.path.isfile(p):
-            return p
-    return None
-
-# ─────────────────────────────────────────────────────────────
-# Per-Customer Bot Panel
-# ─────────────────────────────────────────────────────────────
-
-class CustomerBotPanel(tk.Frame):
-    def __init__(self, parent, customer_name: str, cdp_port: int):
-        super().__init__(parent, bg=BG)
-        self.customer_name = customer_name
-        self.cdp_port = cdp_port
-        self.bot_process = None
-        self.log_q = queue.Queue()
-        self._build()
-        self._refresh_chrome_status()
-
-    def _build(self):
-        # Header
-        header = tk.Frame(self, bg=SURFACE); header.pack(fill="x")
-        tk.Label(header, text=f"👤 {self.customer_name}", font=("Segoe UI", 13, "bold"),
-                 fg=TEXT, bg=SURFACE, pady=12, padx=16).pack(side="left")
-                 
-        tk.Label(header, text=f"(Port {self.cdp_port})", font=("Segoe UI", 9),
-                 fg=SUBTEXT, bg=SURFACE).pack(side="left")
-
-        # Chrome status dot
-        self.chrome_dot = status_dot(header, color=SUBTEXT)
-        self.chrome_dot.pack(side="right", padx=6)
-        self.chrome_status_lbl = tk.Label(header, text="Chrome: ?", font=("Segoe UI", 9),
-                                          fg="#c4b5fd", bg=SURFACE)
-        self.chrome_status_lbl.pack(side="right", padx=2)
-
-        # Chrome Buttons
-        btn_row1 = tk.Frame(self, bg=BG); btn_row1.pack(fill="x", padx=16, pady=(16, 4))
-        styled_button(btn_row1, "🌐  Launch Chrome", self._launch_chrome, bg="#059669").pack(side="left", padx=(0, 10))
-        styled_label(btn_row1, "(Please login manually in the launched window)", fg=SUBTEXT, font=("Segoe UI", 9)).pack(side="left")
-
-        # Bot Buttons
-        btn_row2 = tk.Frame(self, bg=BG); btn_row2.pack(fill="x", padx=16, pady=8)
-        self.bot_dot = status_dot(btn_row2, color=SUBTEXT)
-        self.bot_dot.pack(side="left", padx=(0, 6))
-        self.status_label = tk.Label(btn_row2, text="Bot: Stopped", font=("Segoe UI", 9, "bold"),
-                                     fg=SUBTEXT, bg=BG)
-        self.status_label.pack(side="left", padx=(0, 16))
-
-        self.start_btn = styled_button(btn_row2, "▶  Start Booking Bot", self.start_bot, bg=SUCCESS)
-        self.start_btn.pack(side="left", padx=(0, 10))
-        self.stop_btn = styled_button(btn_row2, "⏹  Stop Bot", self.stop_bot, bg=DANGER)
-        self.stop_btn.pack(side="left")
-        self.stop_btn.config(state="disabled")
-        
-        styled_button(btn_row2, "🗑  Clear Log", self._clear_log, bg=SURFACE, padx=10).pack(side="right")
-
-        # Log Window
-        log_frame = tk.Frame(self, bg=BG); log_frame.pack(fill="both", expand=True, padx=16, pady=(0,16))
-        self.log = log_widget(log_frame)
-        self.log.pack(fill="both", expand=True)
-
-    def _refresh_chrome_status(self):
-        running = _is_chrome_debug_running(self.cdp_port)
-        if running:
-            self.chrome_dot.delete("all"); self.chrome_dot.create_oval(1,1,9,9, fill=SUCCESS, outline="")
-            self.chrome_status_lbl.config(text="Chrome: Connected", fg="#86efac")
-        else:
-            self.chrome_dot.delete("all"); self.chrome_dot.create_oval(1,1,9,9, fill=DANGER, outline="")
-            self.chrome_status_lbl.config(text="Chrome: Not Running", fg="#fca5a5")
-        self.after(3000, self._refresh_chrome_status)
-
-    def _launch_chrome(self):
-        if _is_chrome_debug_running(self.cdp_port):
-            messagebox.showinfo("Chrome", f"Chrome debug port {self.cdp_port} is already active for {self.customer_name}.")
-            return
-        chrome = _find_chrome_exe()
-        if not chrome:
-            messagebox.showerror("Chrome Not Found", "Could not find chrome.exe.")
-            return
-        
-        profile_dir = BASE_DIR / f"chrome_profile_{self.customer_name.replace(' ', '_')}"
-        profile_dir.mkdir(exist_ok=True)
-        try:
-            proc = subprocess.Popen([
-                chrome,
-                f"--remote-debugging-port={self.cdp_port}",
-                f"--user-data-dir={profile_dir}",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-blink-features=AutomationControlled",
-                "https://www.usvisascheduling.com/en-US/",
-            ])
-            log_append(self.log, f"[{datetime.now():%H:%M:%S}] 🌐 Launched Chrome on port {self.cdp_port}.")
-            log_append(self.log, f"      -> Profile: {profile_dir.name}")
-
         except Exception as e:
-            log_append(self.log, f"❌ Failed to launch Chrome: {e}")
+            messagebox.showerror("Error", f"Failed to save accounts.json:\n{e}")
+            return False
 
-    def _set_status(self, running: bool):
-        if running:
-            self.bot_dot.delete("all"); self.bot_dot.create_oval(1,1,9,9, fill=SUCCESS, outline="")
-            self.status_label.config(text="Bot: Running", fg=SUCCESS)
-            self.start_btn.config(state="disabled")
-            self.stop_btn.config(state="normal")
-        else:
-            self.bot_dot.delete("all"); self.bot_dot.create_oval(1,1,9,9, fill=SUBTEXT, outline="")
-            self.status_label.config(text="Bot: Stopped", fg=SUBTEXT)
-            self.start_btn.config(state="normal")
-            self.stop_btn.config(state="disabled")
+    def _build_ui(self):
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-    def start_bot(self):
-        if not _is_chrome_debug_running(self.cdp_port):
-            messagebox.showwarning("Chrome Not Running", f"Please launch Chrome for {self.customer_name} first.")
-            return
-        if self.bot_process and self.bot_process.poll() is None:
-            return
-        
-        log_append(self.log, f"[{datetime.now():%H:%M:%S}] 🚀 Starting Bot2 for {self.customer_name}...")
-        try:
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
-            self.bot_process = subprocess.Popen(
-                [sys.executable, "-u", str(BOT2_SCRIPT), "--cdp-port", str(self.cdp_port), "--customer", self.customer_name],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                cwd=str(BASE_DIR),
-                text=True, encoding="utf-8", errors="replace",
-                bufsize=1,
-                env=env,
+        # Tabs
+        self.tab_accounts = ttk.Frame(self.notebook, style="TFrame")
+        self.tab_orchestrator = ttk.Frame(self.notebook, style="TFrame")
+
+        self.notebook.add(self.tab_accounts, text="  Accounts Manager  ")
+        self.notebook.add(self.tab_orchestrator, text="  Orchestrator Control  ")
+
+        self._build_accounts_tab()
+        self._build_orchestrator_tab()
+
+    # ─── Accounts Tab ────────────────────────────────────────────────────────
+
+    def _build_accounts_tab(self):
+        # Left side: Listbox of accounts
+        left_frame = ttk.Frame(self.tab_accounts, width=250, style="Surface.TFrame")
+        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+        left_frame.pack_propagate(False)
+
+        ttk.Label(left_frame, text="Accounts", style="Header.TLabel").pack(pady=(15, 10))
+
+        self.listbox = tk.Listbox(left_frame, bg=ENTRY_BG, fg=ENTRY_FG, font=("Segoe UI", 11),
+                                  selectbackground=ACCENT, borderwidth=0, highlightthickness=1, 
+                                  highlightbackground=BORDER)
+        self.listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.listbox.bind("<<ListboxSelect>>", self._on_account_select)
+
+        btn_frame = ttk.Frame(left_frame, style="Surface.TFrame")
+        btn_frame.pack(fill=tk.X, padx=10, pady=10)
+        ttk.Button(btn_frame, text="Add New Account", style="Primary.TButton", 
+                   command=self._on_add_account).pack(fill=tk.X)
+
+        # Right side: Form in a scrollable Canvas
+        self.right_frame = ttk.Frame(self.tab_accounts, style="TFrame")
+        self.right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(0, 10), pady=10)
+
+        self.canvas = tk.Canvas(self.right_frame, bg=SURFACE, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.right_frame, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.canvas, style="Surface.TFrame")
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(
+                scrollregion=self.canvas.bbox("all")
             )
-            self._set_status(True)
-            threading.Thread(target=self._stream_output, daemon=True).start()
-            self._poll_queue()
-        except Exception as e:
-            log_append(self.log, f"❌ Failed to start Bot: {e}")
+        )
 
-    def stop_bot(self):
-        if self.bot_process:
-            try:
-                self.bot_process.terminate()
-            except Exception:
-                pass
-            self.bot_process = None
-        self._set_status(False)
-        log_append(self.log, f"[{datetime.now():%H:%M:%S}] ⏹ Bot stopped by user.")
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw", width=680)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
 
-    def _stream_output(self):
-        try:
-            for line in iter(self.bot_process.stdout.readline, ""):
-                self.log_q.put(line.rstrip())
-            self.bot_process.stdout.close()
-        except Exception:
-            pass
-        finally:
-            self.log_q.put("__EXIT__")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
 
-    def _poll_queue(self):
-        try:
-            while True:
-                line = self.log_q.get_nowait()
-                if line == "__EXIT__":
-                    self._set_status(False)
-                    log_append(self.log, f"[{datetime.now():%H:%M:%S}] ⏹ Process exited.")
-                    return
-                log_append(self.log, line)
-        except queue.Empty:
-            pass
-        self.after(200, self._poll_queue)
+        def _on_mousewheel(event):
+            self.canvas.yview_scroll(int(-1*(event.delta/120)), "units")
 
-    def _clear_log(self):
-        self.log.config(state="normal")
-        self.log.delete("1.0", "end")
-        self.log.config(state="disabled")
+        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
 
-
-# ─────────────────────────────────────────────────────────────
-# Multi-Bot Tab (Container for isolated customers)
-# ─────────────────────────────────────────────────────────────
-
-class MultiBotTab(tk.Frame):
-    def __init__(self, parent):
-        super().__init__(parent, bg=BG)
-        self.panels = {}
-        self.current_panel = None
-        self._build()
-
-    def _build(self):
-        # Left sidebar for customer list
-        sidebar = tk.Frame(self, bg=SURFACE, width=200)
-        sidebar.pack(side="left", fill="y")
-        sidebar.pack_propagate(False)
-
-        top_f = tk.Frame(sidebar, bg=SURFACE); top_f.pack(fill="x", pady=10, padx=10)
-        tk.Label(top_f, text="Customers", font=("Segoe UI", 11, "bold"), fg=TEXT, bg=SURFACE).pack(side="left")
-        styled_button(top_f, "🔄", self._load_customers, bg=ACCENT, padx=6, pady=2).pack(side="right")
-
-        self.listbox = tk.Listbox(sidebar, bg=ENTRY_BG, fg=TEXT, font=("Segoe UI", 10),
-                                  selectbackground=ACCENT, selectforeground="white",
-                                  relief="flat", highlightthickness=0)
-        self.listbox.pack(fill="both", expand=True, padx=10, pady=(0,10))
-        self.listbox.bind("<<ListboxSelect>>", self._on_select)
-
-        # Right main area
-        self.main_area = tk.Frame(self, bg=BG)
-        self.main_area.pack(side="right", fill="both", expand=True)
+        # Vars
+        self.var_customer = tk.StringVar()
+        self.var_username = tk.StringVar()
+        self.var_password = tk.StringVar()
         
-        self.empty_lbl = tk.Label(self.main_area, text="Select a customer from the sidebar.",
-                                  font=("Segoe UI", 11), fg=SUBTEXT, bg=BG)
-        self.empty_lbl.pack(expand=True)
-
-        self._load_customers()
-
-    def _load_customers(self):
-        self.listbox.delete(0, "end")
-        rows = read_csv_rows()
-        base_port = 9222
+        self.var_ofc_vars = {city: tk.BooleanVar(value=True) for city in CITY_OPTIONS}
+        self.var_consular_vars = {city: tk.BooleanVar(value=True) for city in CITY_OPTIONS}
         
-        for i, row in enumerate(rows):
-            name = row.get("customer_name", "").strip()
-            if not name:
-                continue
-            self.listbox.insert("end", name)
+        self.var_ofc_start = tk.StringVar()
+        self.var_ofc_end = tk.StringVar()
+        self.var_cons_start = tk.StringVar()
+        self.var_cons_end = tk.StringVar()
+        
+        self.var_sync_consular = tk.BooleanVar(value=True)
+        self.sq_rows = []
+
+        self._build_form()
+        self._refresh_listbox()
+
+    def _add_row(self, parent, row, label, var, show=None):
+        ttk.Label(parent, text=label, style="Subhead.TLabel").grid(row=row, column=0, sticky="e", padx=(0, 15), pady=8)
+        ent = tk.Entry(parent, textvariable=var, bg=ENTRY_BG, fg=ENTRY_FG, font=("Segoe UI", 11), 
+                       insertbackground=TEXT, borderwidth=0, highlightthickness=1, highlightbackground=BORDER)
+        if show:
+            ent.config(show=show)
+        ent.grid(row=row, column=1, sticky="we", pady=8)
+        parent.columnconfigure(1, weight=1)
+
+    def _add_city_grid(self, parent, label_text, vars_dict):
+        header = ttk.Frame(parent, style="Surface.TFrame")
+        header.pack(fill=tk.X, pady=(15, 5))
+        
+        ttk.Label(header, text=label_text, font=("Segoe UI", 10, "bold"), foreground="#6366f1", style="Surface.TLabel").pack(side=tk.LEFT)
+        lbl_all = tk.Label(header, text="Select All", font=("Segoe UI", 9, "bold"), fg="#6366f1", bg=SURFACE, cursor="hand2")
+        lbl_all.pack(side=tk.RIGHT)
+        def toggle_all(e):
+            all_checked = all(v.get() for v in vars_dict.values())
+            new_val = not all_checked
+            for v in vars_dict.values():
+                v.set(new_val)
+            lbl_all.config(text="Select All" if all_checked else "Deselect All")
+
+        def update_lbl(*args):
+            all_checked = all(v.get() for v in vars_dict.values())
+            lbl_all.config(text="Deselect All" if all_checked else "Select All")
+
+        for var in vars_dict.values():
+            var.trace_add("write", update_lbl)
             
-            if name not in self.panels:
-                port = base_port + i
-                self.panels[name] = CustomerBotPanel(self.main_area, name, port)
+        update_lbl()
 
-    def _on_select(self, event):
+        lbl_all.bind("<Button-1>", toggle_all)
+
+        grid_frame = ttk.Frame(parent, style="Surface.TFrame")
+        grid_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Grid layout for pills (e.g. 4 columns)
+        for i, (city, var) in enumerate(vars_dict.items()):
+            row = i // 4
+            col = i % 4
+            btn = ttk.Checkbutton(grid_frame, text=city, variable=var, style="Toolbutton", width=12)
+            btn.grid(row=row, column=col, padx=5, pady=5)
+
+    def _parse_date_value(self, value):
+        if not value:
+            return None
+        raw = str(value).strip()
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(raw, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _format_date_iso(self, value):
+        dt = self._parse_date_value(value)
+        return dt.strftime("%Y-%m-%d") if dt else ""
+
+    def _format_date_display(self, value):
+        dt = self._parse_date_value(value)
+        return dt.strftime("%d-%m-%Y") if dt else ""
+
+    def _add_date_range(self, parent, start_var, end_var):
+        frame = ttk.Frame(parent, style="Surface.TFrame")
+        frame.pack(fill=tk.X, pady=(5, 15))
+        
+        start_frame = ttk.Frame(frame, style="Surface.TFrame")
+        start_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        ttk.Label(start_frame, text="START DATE", font=("Segoe UI", 9, "bold"), foreground="#94a3b8", style="Surface.TLabel").pack(anchor="w", pady=(0, 5))
+        de_start = DateEntry(start_frame, textvariable=start_var, date_pattern='yyyy-mm-dd', 
+                             style="DateEntry.TEntry",
+                             background=ENTRY_BG, foreground=ENTRY_FG, headersbackground=SURFACE, 
+                             headersforeground=TEXT, selectbackground=ACCENT_HOVER, selectforeground=TEXT,
+                             borderwidth=0, font=("Segoe UI", 10))
+        de_start.pack(fill=tk.X)
+
+        end_frame = ttk.Frame(frame, style="Surface.TFrame")
+        end_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(10, 0))
+        ttk.Label(end_frame, text="END DATE", font=("Segoe UI", 9, "bold"), foreground="#94a3b8", style="Surface.TLabel").pack(anchor="w", pady=(0, 5))
+        de_end = DateEntry(end_frame, textvariable=end_var, date_pattern='yyyy-mm-dd', 
+                           style="DateEntry.TEntry",
+                           background=ENTRY_BG, foreground=ENTRY_FG, headersbackground=SURFACE, 
+                           headersforeground=TEXT, selectbackground=ACCENT_HOVER, selectforeground=TEXT,
+                           borderwidth=0, font=("Segoe UI", 10))
+        de_end.pack(fill=tk.X)
+
+        ttk.Label(frame, text="Stored in accounts.json as YYYY-MM-DD", font=("Segoe UI", 8), foreground="#94a3b8", style="Surface.TLabel").pack(fill=tk.X, pady=(5, 0))
+
+    def _build_form(self):
+        container = ttk.Frame(self.scrollable_frame, style="Surface.TFrame")
+        container.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+
+        # Basic Info
+        basic_frame = ttk.Frame(container, style="Surface.TFrame")
+        basic_frame.pack(fill=tk.X, pady=(0, 10))
+        self._add_row(basic_frame, 0, "Customer Name:", self.var_customer)
+        self._add_row(basic_frame, 1, "Username/Email:", self.var_username)
+        self._add_row(basic_frame, 2, "Password:", self.var_password, show="*")
+
+        ttk.Separator(container).pack(fill=tk.X, pady=10)
+
+        # OFC Section
+        ofc_frame = ttk.Frame(container, style="Surface.TFrame")
+        ofc_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(ofc_frame, text="OFC BIOMETRICS FOCUS", font=("Segoe UI", 12, "bold"), foreground="#3b82f6", style="Surface.TLabel").pack(anchor="w")
+        ttk.Separator(ofc_frame).pack(fill=tk.X, pady=(5, 5))
+        
+        self._add_city_grid(ofc_frame, "TARGET CITIES", self.var_ofc_vars)
+        self._add_date_range(ofc_frame, self.var_ofc_start, self.var_ofc_end)
+
+        # Sync Checkbox
+        sync_frame = ttk.Frame(container, style="Surface.TFrame")
+        sync_frame.pack(fill=tk.X, pady=15)
+        
+        def on_sync_toggle(*args):
+            if self.var_sync_consular.get():
+                self.cons_frame.pack_forget()
+            else:
+                self.cons_frame.pack(fill=tk.X, before=self.sq_main_frame)
+
+        self.var_sync_consular.trace_add("write", on_sync_toggle)
+        cb_sync = ttk.Checkbutton(sync_frame, text="Keep Consular Location & Dates identical to OFC", 
+                                 variable=self.var_sync_consular, style="Toolbutton")
+        cb_sync.pack(anchor="w", pady=5)
+
+        # Consular Section
+        self.cons_frame = ttk.Frame(container, style="Surface.TFrame")
+        
+        ttk.Label(self.cons_frame, text="CONSULAR INTERVIEW FOCUS", font=("Segoe UI", 12, "bold"), foreground="#3b82f6", style="Surface.TLabel").pack(anchor="w")
+        ttk.Separator(self.cons_frame).pack(fill=tk.X, pady=(5, 5))
+        
+        self._add_city_grid(self.cons_frame, "TARGET CITIES", self.var_consular_vars)
+        self._add_date_range(self.cons_frame, self.var_cons_start, self.var_cons_end)
+
+        # Initialize toggle state
+        if not self.var_sync_consular.get():
+            self.cons_frame.pack(fill=tk.X)
+
+        # Security Questions
+        self.sq_main_frame = ttk.Frame(container, style="Surface.TFrame")
+        self.sq_main_frame.pack(fill=tk.X, pady=(15, 0))
+        
+        sq_header_frame = ttk.Frame(self.sq_main_frame, style="Surface.TFrame")
+        sq_header_frame.pack(fill=tk.X, pady=(10, 5))
+        ttk.Label(sq_header_frame, text="Security Questions", font=("Segoe UI", 12, "bold"), foreground=TEXT, style="Surface.TLabel").pack(side=tk.LEFT)
+        ttk.Button(sq_header_frame, text="+ Add Question", style="Primary.TButton", command=self._add_sq_row).pack(side=tk.RIGHT)
+        ttk.Separator(self.sq_main_frame).pack(fill=tk.X, pady=(0, 10))
+
+        self.sq_container = ttk.Frame(self.sq_main_frame, style="Surface.TFrame")
+        self.sq_container.pack(fill=tk.X)
+
+        # Action Buttons
+        action_frame = ttk.Frame(container, style="Surface.TFrame")
+        action_frame.pack(fill=tk.X, pady=30)
+        ttk.Button(action_frame, text="Delete", style="Danger.TButton", command=self._on_delete_account).pack(side=tk.LEFT)
+        ttk.Button(action_frame, text="Save Changes", style="Success.TButton", command=self._on_save_account).pack(side=tk.RIGHT)
+
+    def _clear_sq_rows(self):
+        for child in self.sq_container.winfo_children():
+            child.destroy()
+        self.sq_rows.clear()
+
+    def _add_sq_row(self, keyword="", answer=""):
+        row_frame = ttk.Frame(self.sq_container, style="Surface.TFrame")
+        row_frame.pack(fill=tk.X, pady=4)
+        
+        var_k = tk.StringVar(value=keyword)
+        var_a = tk.StringVar(value=answer)
+        
+        ent_k = tk.Entry(row_frame, textvariable=var_k, width=15, bg=ENTRY_BG, fg=ENTRY_FG, font=("Segoe UI", 11), insertbackground=TEXT, borderwidth=0, highlightthickness=1, highlightbackground=BORDER)
+        ent_k.pack(side=tk.LEFT, padx=(0, 10))
+        
+        ent_a = tk.Entry(row_frame, textvariable=var_a, bg=ENTRY_BG, fg=ENTRY_FG, font=("Segoe UI", 11), insertbackground=TEXT, borderwidth=0, highlightthickness=1, highlightbackground=BORDER)
+        ent_a.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
+        
+        btn_del = ttk.Button(row_frame, text="❌", style="Danger.TButton", width=3, command=lambda f=row_frame, vk=var_k, va=var_a: self._delete_sq_row(f, vk, va))
+        btn_del.pack(side=tk.RIGHT)
+        
+        self.sq_rows.append((var_k, var_a))
+
+    def _delete_sq_row(self, frame, var_k, var_a):
+        frame.destroy()
+        if (var_k, var_a) in self.sq_rows:
+            self.sq_rows.remove((var_k, var_a))
+
+    def _refresh_listbox(self):
+        self.listbox.delete(0, tk.END)
+        for acc in self.accounts:
+            name = acc.get("customer_name", "Unknown")
+            self.listbox.insert(tk.END, name)
+        
+        self._update_active_bots_list()
+
+    def _on_account_select(self, event):
         sel = self.listbox.curselection()
         if not sel:
             return
-        name = self.listbox.get(sel[0])
-        self._show_panel(name)
+        self.current_account_idx = sel[0]
+        acc = self.accounts[self.current_account_idx]
 
-    def _show_panel(self, name):
-        if self.current_panel:
-            self.current_panel.pack_forget()
-        self.empty_lbl.pack_forget()
+        self.var_customer.set(acc.get("customer_name", ""))
+        self.var_username.set(acc.get("username", ""))
+        self.var_password.set(acc.get("password", ""))
         
-        panel = self.panels.get(name)
-        if panel:
-            panel.pack(fill="both", expand=True)
-            self.current_panel = panel
+        ofc_cities = acc.get("ofcCities", [])
+        for city, var in self.var_ofc_vars.items():
+            var.set(city in ofc_cities)
 
-# ─────────────────────────────────────────────────────────────
-# Main App
-# ─────────────────────────────────────────────────────────────
+        consular_cities = acc.get("consularCities", [])
+        for city, var in self.var_consular_vars.items():
+            var.set(city in consular_cities)
 
-class VisaBotApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("US Visa Bot Control Panel")
-        self.geometry("960x720")
-        self.minsize(800, 600)
-        self.configure(bg=BG)
-        self.iconbitmap(default="") 
+        ofc_start = acc.get("ofcStartDate", "")
+        ofc_end = acc.get("ofcEndDate", "")
+        cons_start = acc.get("consularStartDate", "")
+        cons_end = acc.get("consularEndDate", "")
 
-        self._build_title_bar()
-        self._build_tabs()
+        self.var_ofc_start.set(self._format_date_display(ofc_start))
+        self.var_ofc_end.set(self._format_date_display(ofc_end))
+        self.var_cons_start.set(self._format_date_display(cons_start or ofc_start))
+        self.var_cons_end.set(self._format_date_display(cons_end or ofc_end))
 
-    def _build_title_bar(self):
-        bar = tk.Frame(self, bg=ACCENT, height=48); bar.pack(fill="x")
-        tk.Label(bar, text="🛂  US Visa Bot  —  Control Panel",
-                 font=("Segoe UI", 13, "bold"), fg="white", bg=ACCENT,
-                 pady=10, padx=16).pack(side="left")
-        tk.Label(bar, text="Multi-Customer Secure Booker",
-                 font=("Segoe UI", 9), fg="#c4b5fd", bg=ACCENT,
-                 padx=10).pack(side="left")
+        # Check if lists match to set the sync toggle
+        if sorted(ofc_cities) == sorted(consular_cities):
+            self.var_sync_consular.set(True)
+        else:
+            self.var_sync_consular.set(False)
 
-    def _build_tabs(self):
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab",
-                        background=SURFACE, foreground=SUBTEXT,
-                        padding=[18, 8], font=("Segoe UI", 10))
-        style.map("TNotebook.Tab",
-                  background=[("selected", ACCENT)],
-                  foreground=[("selected", "white")])
+        self._clear_sq_rows()
+        sq = acc.get("security_questions", {})
+        for k, v in sq.items():
+            self._add_sq_row(k, v)
+            
+        while len(self.sq_rows) < 3:
+            self._add_sq_row()
 
-        nb = ttk.Notebook(self, style="TNotebook")
-        nb.pack(fill="both", expand=True, pady=(0, 0))
+    def _on_add_account(self):
+        self.current_account_idx = None
+        self.listbox.selection_clear(0, tk.END)
+        self.var_customer.set("")
+        self.var_username.set("")
+        self.var_password.set("")
+        for var in self.var_ofc_vars.values(): var.set(True)
+        for var in self.var_consular_vars.values(): var.set(True)
+        self.var_ofc_start.set("2026-01-01")
+        self.var_ofc_end.set("2026-12-31")
+        self.var_cons_start.set("2026-01-01")
+        self.var_cons_end.set("2026-12-31")
+        self.var_sync_consular.set(True)
+        self._clear_sq_rows()
+        for _ in range(3): self._add_sq_row()
 
-        config_tab = ConfigTab(nb)
-        slots_tab  = SlotsTab(nb)
-        monitor_tab = ProcessTab(nb, MONITOR_SCRIPT,
-                                 "Slot Monitor",
-                                 "Polls the VisaSlots API every 15-20s and fires trigger_{name}.json when a qualifying slot is found.")
+    def _on_save_account(self):
+        customer = self.var_customer.get().strip()
+        if not customer:
+            messagebox.showwarning("Warning", "Customer name cannot be empty.")
+            return
+
+        sq_dict = {}
+        for var_k, var_a in self.sq_rows:
+            k = var_k.get().strip()
+            a = var_a.get().strip()
+            if k: sq_dict[k] = a
+
+        ofc_cities = [city for city, var in self.var_ofc_vars.items() if var.get()]
+        ofc_start = self._format_date_iso(self.var_ofc_start.get().strip())
+        ofc_end = self._format_date_iso(self.var_ofc_end.get().strip())
+
+        if self.var_sync_consular.get():
+            consular_cities = ofc_cities
+            consular_start = ofc_start
+            consular_end = ofc_end
+        else:
+            consular_cities = [city for city, var in self.var_consular_vars.items() if var.get()]
+            consular_start = self._format_date_iso(self.var_cons_start.get().strip())
+            consular_end = self._format_date_iso(self.var_cons_end.get().strip())
+
+        acc_data = {
+            "customer_name": customer,
+            "username": self.var_username.get().strip(),
+            "password": self.var_password.get().strip(),
+            "ofcCities": ofc_cities,
+            "ofcStartDate": ofc_start,
+            "ofcEndDate": ofc_end,
+            "consularCities": consular_cities,
+            "consularStartDate": consular_start,
+            "consularEndDate": consular_end,
+            "security_questions": sq_dict
+        }
+
+        if self.current_account_idx is not None:
+            self.accounts[self.current_account_idx] = acc_data
+        else:
+            self.accounts.append(acc_data)
+            self.current_account_idx = len(self.accounts) - 1
+
+        if self._save_accounts():
+            self._refresh_listbox()
+            self.listbox.selection_set(self.current_account_idx)
+            messagebox.showinfo("Success", "Account saved successfully.")
+
+    def _on_delete_account(self):
+        if self.current_account_idx is None: return
+        if messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this account?"):
+            del self.accounts[self.current_account_idx]
+            if self._save_accounts():
+                self._on_add_account()
+                self._refresh_listbox()
+
+    # ─── Orchestrator Tab ────────────────────────────────────────────────────
+    # Keep the same as before
+    def _build_orchestrator_tab(self):
+        top_frame = ttk.Frame(self.tab_orchestrator, style="Surface.TFrame")
+        top_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        ttk.Label(top_frame, text="Orchestrator Control", style="Header.TLabel").pack(side=tk.LEFT, padx=15, pady=15)
+
+        self.btn_start = ttk.Button(top_frame, text="▶ Start All Bots", style="Success.TButton", command=self._start_orchestrator)
+        self.btn_start.pack(side=tk.RIGHT, padx=15)
+
+        self.btn_stop = ttk.Button(top_frame, text="⏹ Stop All", style="Danger.TButton", command=self._stop_orchestrator)
+        self.btn_stop.pack(side=tk.RIGHT, padx=5)
+        self.btn_stop.state(["disabled"])
+
+        monitor_frame = ttk.Frame(self.tab_orchestrator, style="Surface.TFrame")
+        monitor_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        # New Multi-Bot isolation tab
-        bots_tab = MultiBotTab(nb)
+        self.var_run_monitor = tk.BooleanVar(value=True)
+        self.var_monitor_interval = tk.StringVar(value="15")
+        
+        self.chk_monitor = ttk.Checkbutton(monitor_frame, text=" Run Slot Monitor ", variable=self.var_run_monitor, style="Toolbutton")
+        self.chk_monitor.pack(side=tk.LEFT, padx=15, pady=10)
+        
+        ttk.Label(monitor_frame, text="Polling Interval (seconds):", style="Subhead.TLabel").pack(side=tk.LEFT, padx=(20, 5))
+        ent_interval = tk.Entry(monitor_frame, textvariable=self.var_monitor_interval, bg=ENTRY_BG, fg=ENTRY_FG, 
+                                font=("Segoe UI", 10), insertbackground=TEXT, borderwidth=0, highlightthickness=1, 
+                                highlightbackground=BORDER, width=6)
+        ent_interval.pack(side=tk.LEFT, pady=10)
 
-        nb.add(config_tab,   text="⚙️  Configure")
-        nb.add(slots_tab,    text="📅  Live Slots")
-        nb.add(monitor_tab,  text="🔍  Slot Monitor")
-        nb.add(bots_tab,     text="🤖  OFC Bots")
+        self.bots_frame = ttk.Frame(self.tab_orchestrator, style="Surface.TFrame")
+        self.bots_frame.pack(fill=tk.X, padx=10, pady=5)
 
+        ttk.Label(self.bots_frame, text="Active Accounts:", style="Subhead.TLabel").pack(side=tk.TOP, anchor=tk.W, padx=15, pady=5)
+        
+        self.bots_inner_frame = ttk.Frame(self.bots_frame, style="Surface.TFrame")
+        self.bots_inner_frame.pack(fill=tk.X, padx=15, pady=5)
 
-# ─────────────────────────────────────────────────────────────
+        log_frame = ttk.Frame(self.tab_orchestrator, style="Surface.TFrame")
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 10))
+
+        header_frame = ttk.Frame(log_frame, style="Surface.TFrame")
+        header_frame.pack(fill=tk.X, padx=15, pady=(10, 5))
+        
+        ttk.Label(header_frame, text="Live Output", style="Subhead.TLabel").pack(side=tk.LEFT)
+        
+        self.var_autoscroll = tk.BooleanVar(value=False)
+        ttk.Checkbutton(header_frame, text=" Auto-scroll ", variable=self.var_autoscroll, style="Toolbutton").pack(side=tk.RIGHT)
+
+        self.txt_log = scrolledtext.ScrolledText(log_frame, bg="#0f172a", fg="#10b981", font=("Consolas", 10),
+                                                 borderwidth=0, highlightthickness=0)
+        self.txt_log.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+        self.txt_log.config(state=tk.DISABLED)
+        
+        self._update_active_bots_list()
+
+    def _log(self, text):
+        self.txt_log.config(state=tk.NORMAL)
+        self.txt_log.insert(tk.END, text + "\n")
+        if getattr(self, "var_autoscroll", None) and self.var_autoscroll.get():
+            self.txt_log.see(tk.END)
+        self.txt_log.config(state=tk.DISABLED)
+
+    def _start_orchestrator(self):
+        if self.orchestrator_proc is not None:
+            return
+
+        if not self.accounts:
+            messagebox.showwarning("Warning", "No accounts configured. Please add an account first.")
+            self.notebook.select(self.tab_accounts)
+            return
+
+        self.btn_start.state(["disabled"])
+        self.btn_stop.state(["!disabled"])
+        self.chk_monitor.state(["disabled"])
+        
+
+        self.txt_log.config(state=tk.NORMAL)
+        self.txt_log.delete(1.0, tk.END)
+        self.txt_log.config(state=tk.DISABLED)
+
+        self._log("[GUI] Starting orchestrator.py ...")
+
+        cmd = [sys.executable, str(ORCHESTRATOR_SCRIPT)]
+        
+        if not self.var_run_monitor.get():
+            cmd.append("--no-monitor")
+        else:
+            try:
+                interval = int(self.var_monitor_interval.get())
+                if interval > 0:
+                    cmd.extend(["--monitor-interval", str(interval)])
+            except ValueError:
+                self._log("[GUI] Warning: Invalid interval. Using defaults.")
+        
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        
+        # Ensure absolute imports work (e.g. from src.auth...)
+        if "PYTHONPATH" in env:
+            env["PYTHONPATH"] = str(BASE_DIR) + os.pathsep + env["PYTHONPATH"]
+        else:
+            env["PYTHONPATH"] = str(BASE_DIR)
+
+        self.orchestrator_proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", 
+            bufsize=1, cwd=str(BASE_DIR), env=env
+        )
+
+        # Update bots list now that orchestrator_proc is set
+        self._update_active_bots_list()
+
+        threading.Thread(target=self._read_orchestrator_output, daemon=True).start()
+
+    def _read_orchestrator_output(self):
+        try:
+            for line in iter(self.orchestrator_proc.stdout.readline, ''):
+                if line:
+                    self.after(0, self._log, line.rstrip())
+        except Exception:
+            pass
+        self.after(0, self._on_orchestrator_exit)
+
+    def _stop_orchestrator(self):
+        if self.orchestrator_proc:
+            self._log("[GUI] Sending termination signal to orchestrator...")
+            self.btn_stop.state(["disabled"])
+            try:
+                self.orchestrator_proc.terminate()
+            except Exception:
+                pass
+        self._update_active_bots_list()
+
+    def _on_orchestrator_exit(self):
+        self.orchestrator_proc = None
+        self.btn_start.state(["!disabled"])
+        self.btn_stop.state(["disabled"])
+        self.chk_monitor.state(["!disabled"])
+        self._log("[GUI] Orchestrator has stopped.")
+        self._update_active_bots_list()
+
+    def _update_active_bots_list(self):
+        if not hasattr(self, 'bots_inner_frame'): return
+        
+        for widget in self.bots_inner_frame.winfo_children():
+            widget.destroy()
+
+        if not self.orchestrator_proc:
+            ttk.Label(self.bots_inner_frame, text="No bots are running.", foreground="#94a3b8").pack(pady=5, anchor=tk.W)
+            return
+
+        customers = [a.get("customer_name") for a in self.accounts if a.get("customer_name")]
+        for cust in customers:
+            row = ttk.Frame(self.bots_inner_frame)
+            row.pack(fill=tk.X, pady=2)
+            
+            ttk.Label(row, text=f"🤖 {cust}", font=("Segoe UI", 10, "bold"), width=25).pack(side=tk.LEFT, padx=(0, 10))
+            
+            btn_book = ttk.Button(row, text="⚡ Manual Book", style="Primary.TButton", 
+                                  command=lambda c=cust: self._on_manual_book(c))
+            btn_book.pack(side=tk.LEFT, padx=5)
+            
+            btn_close = ttk.Button(row, text="🛑 Close Bot", style="Danger.TButton", 
+                                   command=lambda c=cust: self._on_close_bot(c))
+            btn_close.pack(side=tk.LEFT, padx=5)
+
+    def _on_close_bot(self, customer):
+        safe_name = customer.replace(" ", "_")
+        stop_path = BASE_DIR / "src" / f".stop_{safe_name}"
+        try:
+            stop_path.touch(exist_ok=True)
+            self._log(f"[GUI] 🛑 Close signal sent to orchestrator for '{customer}'.")
+        except Exception as e:
+            self._log(f"[GUI] Error sending close signal for '{customer}': {e}")
+
+    def _on_manual_book(self, customer):
+        if not customer:
+            return
+        
+        acc = next((a for a in self.accounts if a.get("customer_name") == customer), None)
+        if not acc:
+            return
+            
+        state_path = BASE_DIR / "src" / f"state_{customer}.json"
+        try:
+            # Read existing state to preserve extension_running flag
+            existing = {}
+            if state_path.exists():
+                try:
+                    existing = json.loads(state_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            # If extension_running is stuck True, ask user if they want to force it.
+            if existing.get("extension_running"):
+                force = messagebox.askyesno(
+                    "Already Running?",
+                    f"The booking runner for '{customer}' reports it is already executing.\n\n"
+                    "This may be stale. Do you want to force a new booking trigger anyway?"
+                )
+                if not force:
+                    return
+
+            existing.update({
+                "extension_running": False,
+                "pending": True,
+                "ofcCities": acc.get("ofcCities", []),
+                "ofcStartDate": acc.get("ofcStartDate", ""),
+                "ofcEndDate": acc.get("ofcEndDate", ""),
+                "consularCities": acc.get("consularCities", []),
+                "consularStartDate": acc.get("consularStartDate", ""),
+                "consularEndDate": acc.get("consularEndDate", ""),
+                "customer_name": customer,
+            })
+            state_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            self._log(f"[GUI] ⚡ Manual trigger queued for '{customer}'.")
+            messagebox.showinfo("Triggered", f"Trigger queued for '{customer}'.\nBooking runner will pick it up within 0.5s.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to write state file: {e}")
+
+    def destroy(self):
+        if self.orchestrator_proc:
+            try:
+                self.orchestrator_proc.terminate()
+            except:
+                pass
+        super().destroy()
+
 if __name__ == "__main__":
-    app = VisaBotApp()
+    app = App()
     app.mainloop()

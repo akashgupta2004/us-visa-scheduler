@@ -44,11 +44,11 @@ ENV/
 
 # Chrome profiles (large directories)
 chrome_profile/
-chrome_profile_pragadeesh28/
-chrome_profile_rohan/
+chrome_profile_*/
 
 # Sensitive/local data
 .env
+accounts.json
 security_questions.json
 slot_alert_state.json
 
@@ -58,6 +58,12 @@ slot_alert_state.json
 htmlcov/
 *.log
 *.tmp
+test_*.py
+launch.py
+test_profile*/
+*.png
+state_*.json
+trigger_*.json
 
 # OS specific
 .DS_Store

@@ -1,0 +1,40 @@
+"""
+slack.py — Send a message to the VisaBot Slack channel.
+
+Usage:
+    python slack.py "Your message here"
+    python slack.py  (opens interactive prompt)
+"""
+
+import sys
+import requests
+
+SLACK_WEBHOOK = "https://hooks.slack.com/services/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"
+
+
+def send(message: str, emoji: str = "💬") -> bool:
+    """Send a message to Slack. Returns True on success."""
+    payload = {"text": f"{emoji} {message}"}
+    try:
+        r = requests.post(SLACK_WEBHOOK, json=payload, timeout=10)
+        r.raise_for_status()
+        print(f"✅ Sent: {message}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to send: {e}")
+        return False
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        # Message passed as CLI argument
+        msg = " ".join(sys.argv[1:])
+    else:
+        # Interactive prompt
+        msg = input("Message: ").strip()
+        if not msg:
+            print("No message provided.")
+            sys.exit(1)
+
+    ok = send(msg)
+    sys.exit(0 if ok else 1)

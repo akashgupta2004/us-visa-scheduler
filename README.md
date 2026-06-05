@@ -16,8 +16,7 @@ The system is a **three-process pipeline**:
                                             │ trigger.json
                                             │
                                       ┌─────┴────────────┐
-                                      │  slot_monitor_    │
-                                      │  qualified.py     │
+                                      │  slot_monitor.py │
                                       │  (Slot Watcher)   │
                                       └──────────────────┘
 ```
@@ -26,7 +25,7 @@ The system is a **three-process pipeline**:
 |---|---|
 | `bot.py` | Launches Chrome with remote debugging, logs in, handles CAPTCHA & security questions, keeps session alive |
 | `bot2_ofc_booking.py` | Connects to the same Chrome session, parks on the OFC scheduling page, and books instantly when triggered |
-| `slot_monitor_qualified.py` | Polls a slot-checking API, matches slots against customer criteria, writes `trigger.json` when a valid slot is found, and sends Slack alerts |
+| `slot_monitor.py` | Polls a slot-checking API, matches slots against customer criteria, writes `trigger.json` when a valid slot is found, and sends Slack alerts |
 
 ## 📁 File Structure
 
@@ -34,7 +33,7 @@ The system is a **three-process pipeline**:
 bot/
 ├── bot.py                          # Login bot (run first)
 ├── bot2_ofc_booking.py             # OFC booking bot (run second)
-├── slot_monitor_qualified (1).py   # Slot monitor (run third)
+├── slot_monitor.py                 # Slot monitor (run third)
 ├── gui.py                          # Tkinter dashboard (optional)
 ├── show_slots.py                   # Quick slot viewer utility
 ├── test_trigger.py                 # Test trigger.json generation
@@ -42,7 +41,7 @@ bot/
 ├── .env                            # Credentials (not committed)
 ├── .env.example                    # Template for .env
 ├── security_questions.json         # Security question answers
-├── slot_notification.csv           # Customer booking criteria
+├── accounts.json                   # Customer booking criteria and credentials
 ├── requirements.txt                # Python dependencies
 └── chrome_profile/                 # Chrome user data (auto-created)
 ```
@@ -81,11 +80,24 @@ Edit `security_questions.json` with your security question answers:
 
 ### 4. Configure Customer Criteria
 
-Edit `slot_notification.csv` with your booking requirements:
+Edit `accounts.json` or use `gui.py` to manage your customers and booking criteria.
+A customer record should include:
 
-```csv
-customer_name,ofc_location,consular_location,need_before,min_slots
-your_name,HYDERABAD,HYDERABAD,2026-12-31,1
+```json
+{
+  "customer_name": "your_name",
+  "username": "your_email_or_username",
+  "password": "your_password",
+  "ofcCities": ["HYDERABAD"],
+  "ofcStartDate": "2026-01-01",
+  "ofcEndDate": "2026-12-31",
+  "consularCities": ["HYDERABAD"],
+  "consularStartDate": "2026-01-01",
+  "consularEndDate": "2026-12-31",
+  "security_questions": {
+    "food": "YourAnswer"
+  }
+}
 ```
 
 **Supported cities:** `CHENNAI`, `HYDERABAD`, `MUMBAI`, `DELHI`, `KOLKATA` (or `ANY`)
@@ -102,7 +114,7 @@ python bot.py
 python bot2_ofc_booking.py
 
 # Terminal 3 — Monitor slots & trigger booking
-python "slot_monitor_qualified (1).py"
+python slot_monitor.py
 ```
 
 ### Alternative: Use the GUI
@@ -119,7 +131,7 @@ This provides a unified dashboard with start/stop controls and live log streamin
 
 2. **`bot2_ofc_booking.py`** connects to the same Chrome via CDP, navigates to the OFC scheduling page, and enters a polling loop — checking for `trigger.json` every 0.5 seconds while moving the mouse every 60 seconds to prevent session timeout.
 
-3. **`slot_monitor_qualified.py`** polls the CheckVisaSlots API every 15–20 seconds, looking for OFC + Consular date pairs that match your criteria (city, date range, minimum slots). When a match is found, it:
+3. **`slot_monitor.py`** polls the CheckVisaSlots API every 15–20 seconds, looking for OFC + Consular date pairs that match your criteria (city and date range). When a match is found, it:
    - Sends a Slack notification
    - Writes `trigger.json` with the target date and city
 
@@ -140,7 +152,7 @@ This provides a unified dashboard with start/stop controls and live log streamin
 BOOKING_OFC_CITY = "HYDERABAD"  # Change to your target city
 ```
 
-### Slot Monitor Timing (in `slot_monitor_qualified.py`)
+### Slot Monitor Timing (in `slot_monitor.py`)
 
 ```python
 POLL_MIN_SECONDS = 15       # Min seconds between API polls

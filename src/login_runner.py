@@ -32,6 +32,16 @@ LOGIN_URL = "https://www.usvisascheduling.com/en-US/Account/LogOn"
 
 _ARGS: argparse.Namespace | None = None
 
+def _is_login_url(url: str) -> bool:
+    return any(k in url for k in ["logon", "login", "signin", "b2clogin"])
+
+def _is_portal_url(url: str) -> bool:
+    return (
+        "usvisascheduling.com" in url
+        and not _is_login_url(url)
+        and any(k in url for k in ["/schedule", "dashboard", "applicant_details", "/en-us/"])
+    )
+
 def _get_args() -> argparse.Namespace:
     """Parse CLI arguments once, caching the result."""
     global _ARGS
@@ -82,12 +92,13 @@ async def run() -> None:
         missing.append("--username / VISA_USERNAME")
     if not args.password:
         missing.append("--password / VISA_PASSWORD")
-    if not FASTCAPTCHA_API_KEY:
-        missing.append("FASTCAPTCHA_API_KEY")
 
     if missing:
         log.error(f"Missing required values: {', '.join(missing)}")
         sys.exit(1)
+
+    if not FASTCAPTCHA_API_KEY:
+        log.warning("FASTCAPTCHA_API_KEY missing; existing sessions can still be reused, but fresh CAPTCHA login will fail.")
 
     # Start Chrome in debug mode (or connect to existing)
     ensure_chrome_debug_running(args.cdp_port, args.profile_dir, log)
@@ -98,8 +109,12 @@ async def run() -> None:
 
         try:
             # ── 1. & 2. Open site & wait ──────────────
+            already_logged_in = False
             cur_url = page.url.lower()
-            if any(k in cur_url for k in ["logon", "login", "signin", "b2clogin"]):
+            if _is_portal_url(cur_url):
+                log.info("Existing authenticated portal session detected.")
+                already_logged_in = True
+            elif _is_login_url(cur_url):
                 log.info("Already on login page — skipping initial navigation.")
             else:
                 if "usvisascheduling.com" not in cur_url:
@@ -113,8 +128,6 @@ async def run() -> None:
                 # ── 3. Wait for login page or Dashboard ──────────────
                 log.info("Waiting for automatic redirect (up to 5 minutes) …")
                 deadline = time.time() + 300
-                already_logged_in = False
-                
                 while time.time() < deadline:
                     try:
                         cur_url = page.url.lower()
@@ -122,12 +135,12 @@ async def run() -> None:
                         await asyncio.sleep(2)
                         continue
 
-                    if any(k in cur_url for k in ["logon", "login", "signin"]):
+                    if _is_login_url(cur_url):
                         log.info("Arrived at login page.")
                         break
                         
                     # Check if we bypassed login entirely (already logged in)
-                    if any(k in cur_url for k in ["/schedule", "dashboard", "applicant_details", "/en-us/"]):
+                    if _is_portal_url(cur_url):
                         log.info("Already logged in! Reached dashboard directly.")
                         already_logged_in = True
                         break
@@ -137,6 +150,13 @@ async def run() -> None:
                     log.warning("Did not auto-redirect in 5 minutes. Trying manual navigation …")
                     await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=120_000)
                     await wait_for_waiting_room(page, log, timeout_minutes=30)
+                    try:
+                        cur_url = page.url.lower()
+                        if _is_portal_url(cur_url):
+                            log.info("Existing session redirected to portal after manual navigation.")
+                            already_logged_in = True
+                    except Exception:
+                        pass
                     
             if already_logged_in:
                 # Skip to step 5 / READY
@@ -146,6 +166,10 @@ async def run() -> None:
 
             if not already_logged_in:
                 # ── 4. Login ──────────────────────────────
+                if not FASTCAPTCHA_API_KEY:
+                    log.error("Fresh login requires FASTCAPTCHA_API_KEY because this session was not already authenticated.")
+                    return
+
                 success = False
                 for attempt in range(1, 4):
                     log.info(f"Login attempt {attempt}/3")

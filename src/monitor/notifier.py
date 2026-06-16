@@ -25,10 +25,10 @@ def log_slots_for_analysis(rows):
                 
             for row in rows:
                 slots = safe_int(row.get("slots"), 0)
+                loc = row.get("visa_location", "")
+                appt_type = "OFC" if "VAC" in str(loc).upper() else "Consular"
+                
                 if slots > 0:
-                    loc = row.get("visa_location", "")
-                    appt_type = "OFC" if "VAC" in str(loc).upper() else "Consular"
-                    
                     writer.writerow({
                         'timestamp': timestamp,
                         'appointment_type': appt_type,
@@ -37,6 +37,8 @@ def log_slots_for_analysis(rows):
                         'slots': slots
                     })
                     logged_count += 1
+                else:
+                    print(f"[{timestamp}] 0 slots for {appt_type} at {loc}")
     except Exception as e:
         print(f"File write error: {e}")
         
@@ -60,3 +62,7 @@ def format_slack_message(customer, chosen_ofc, chosen_consular, matched_ofc_city
 
 def send_slack(msg):
     slack_send(f"🎯 *Qualified slot match found*\n{msg}")
+
+
+def send_slack_error(msg):
+    slack_send(f"⚠️ *Slot Monitor Error*\n{msg}")

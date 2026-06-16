@@ -102,10 +102,12 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
             await page.evaluate("window.__sniperResult = null;")
 
             if status == "success":
-                log.info(f"✅ Extension reports SUCCESS: {msg}")
+                log.info(f"✅ Booking SUCCESS: {msg}")
                 return True
             else:
-                log.error(f"❌ Extension reports FAILURE: {msg}")
+                log.error(f"❌ Booking FAILURE: {msg}")
+                if "429" in msg:
+                    raise Exception("429 Too Many Requests")
                 return False
 
         await asyncio.sleep(1)
@@ -116,5 +118,80 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
             window.removeEventListener('message', window.__sniperResultListener);
         }
         window.__sniperResult = null;
+    """)
+    return False
+
+
+async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.Logger) -> bool:
+    """
+    Send a window.postMessage to the extension's content script
+    with the RESCHEDULE_CONSULAR configuration.
+    Expects CONSULAR_RESCHEDULE_RESULT back from the content script.
+    """
+    consularCities = trigger.get("consularCities")
+    if not consularCities:
+        log.error("❌ No consularCities in trigger — cannot reschedule.")
+        return False
+    consularCities = [normalize_city(c) for c in consularCities]
+
+    customerName = trigger.get("customer_name", "unknown")
+
+    config = {
+        "consularCities": consularCities,
+        "consularStartDate": trigger.get("consularStartDate", ""),
+        "consularEndDate": trigger.get("consularEndDate", ""),
+    }
+
+    log.info(f"📅 Triggering consular reschedule for '{customerName}'")
+    log.info(f"   Cities: {', '.join(consularCities)} between {config['consularStartDate']} and {config['consularEndDate']}")
+    log.info(f"   Config: {json.dumps(config)}")
+
+    await page.evaluate("""
+        window.__rescheduleResult = null;
+        window.__rescheduleResultListener = function(event) {
+            if (event.source !== window) return;
+            if (event.data && event.data.action === 'CONSULAR_RESCHEDULE_RESULT') {
+                window.__rescheduleResult = event.data;
+                window.removeEventListener('message', window.__rescheduleResultListener);
+            }
+        };
+        window.addEventListener('message', window.__rescheduleResultListener);
+    """)
+
+    await page.evaluate("""(config) => {
+        window.postMessage({
+            action: 'EXECUTE_CONSULAR_RESCHEDULE',
+            config: config
+        }, '*');
+    }""", config)
+
+    log.info("📨 Reschedule message sent to extension. Waiting for result (up to 120s) …")
+
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        result = await page.evaluate("window.__rescheduleResult")
+        if result is not None:
+            status = result.get("status", "unknown")
+            msg = result.get("msg", "No message")
+
+            await page.evaluate("window.__rescheduleResult = null;")
+
+            if status == "success":
+                log.info(f"✅ Reschedule SUCCESS: {msg}")
+                return True
+            else:
+                log.error(f"❌ Reschedule FAILURE: {msg}")
+                if "429" in msg:
+                    raise Exception("429 Too Many Requests")
+                return False
+
+        await asyncio.sleep(1)
+
+    log.error("⏱️ Timed out waiting for reschedule result (120s).")
+    await page.evaluate("""
+        if (window.__rescheduleResultListener) {
+            window.removeEventListener('message', window.__rescheduleResultListener);
+        }
+        window.__rescheduleResult = null;
     """)
     return False

@@ -21,7 +21,7 @@ async def wait_for_waiting_room(page: Page, log: logging.Logger, timeout_minutes
         in_queue = any(kw in html.lower() for kw in [
             "waiting room", "you are in the queue", "queue position",
             "estimated wait", "waitingroom", "cfwaitingroom", "waiting-room",
-            "just a moment", "verify you are human", "challenge-platform", "cloudflare"
+            "just a moment", "verify you are human", "challenge-platform"
         ]) or "moment" in title.lower()
 
         if not in_queue:

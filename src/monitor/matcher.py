@@ -138,3 +138,23 @@ def find_valid_pair(ofc_buckets, consular_buckets, ofc_candidate_cities, consula
                                 best_consular_city = consular_city
 
     return best_pair, best_ofc_matches, best_consular_matches, best_ofc_city, best_consular_city
+
+
+def find_valid_consular_slot(consular_buckets, consular_candidate_cities, consular_need_after, consular_need_before):
+    """
+    Find the earliest valid standalone consular slot for a RESCHEDULE_CONSULAR account.
+    Ignores OFC slots entirely.
+
+    Returns (best_slot, best_city) or (None, None) if nothing found.
+    """
+    best_slot = None
+    best_city = None
+
+    for city in consular_candidate_cities:
+        rows = eligible_rows(consular_buckets.get(city, []), consular_need_after, consular_need_before)
+        for slot in rows:
+            if best_slot is None or slot["date"] < best_slot["date"]:
+                best_slot = slot
+                best_city = city
+
+    return best_slot, best_city

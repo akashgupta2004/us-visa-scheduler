@@ -42,6 +42,7 @@ class App(tk.Tk):
         self.configure(bg=BG)
 
         self.accounts = []
+        self.closed_bots: set = set()
         self.current_account_idx = None
         self.orchestrator_proc = None
 
@@ -182,7 +183,8 @@ class App(tk.Tk):
         self.var_customer = tk.StringVar()
         self.var_username = tk.StringVar()
         self.var_password = tk.StringVar()
-        
+        self.var_action_mode = tk.StringVar(value="SNIPER")
+
         self.var_ofc_vars = {city: tk.BooleanVar(value=True) for city in CITY_OPTIONS}
         self.var_consular_vars = {city: tk.BooleanVar(value=True) for city in CITY_OPTIONS}
         
@@ -299,18 +301,35 @@ class App(tk.Tk):
 
         ttk.Separator(container).pack(fill=tk.X, pady=10)
 
+        # ── Account Mode Selector ──────────────────────────────────────────────
+        mode_frame = ttk.Frame(container, style="Surface.TFrame")
+        mode_frame.pack(fill=tk.X, pady=(5, 10))
+        ttk.Label(mode_frame, text="ACCOUNT MODE", font=("Segoe UI", 12, "bold"), foreground="#3b82f6", style="Surface.TLabel").pack(anchor="w")
+        ttk.Separator(mode_frame).pack(fill=tk.X, pady=(5, 10))
+
+        radio_frame = ttk.Frame(mode_frame, style="Surface.TFrame")
+        radio_frame.pack(fill=tk.X)
+        ttk.Radiobutton(radio_frame, text="Full Booking  (OFC Biometrics + Consular Interview)",
+                        variable=self.var_action_mode, value="SNIPER",
+                        style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, padx=(0, 20), pady=5)
+        ttk.Radiobutton(radio_frame, text="Consular Reschedule Only",
+                        variable=self.var_action_mode, value="RESCHEDULE_CONSULAR",
+                        style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, pady=5)
+
+        ttk.Separator(container).pack(fill=tk.X, pady=10)
+
         # OFC Section
-        ofc_frame = ttk.Frame(container, style="Surface.TFrame")
-        ofc_frame.pack(fill=tk.X, pady=(10, 0))
-        ttk.Label(ofc_frame, text="OFC BIOMETRICS FOCUS", font=("Segoe UI", 12, "bold"), foreground="#3b82f6", style="Surface.TLabel").pack(anchor="w")
-        ttk.Separator(ofc_frame).pack(fill=tk.X, pady=(5, 5))
+        self.ofc_frame = ttk.Frame(container, style="Surface.TFrame")
+        self.ofc_frame.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(self.ofc_frame, text="OFC BIOMETRICS FOCUS", font=("Segoe UI", 12, "bold"), foreground="#3b82f6", style="Surface.TLabel").pack(anchor="w")
+        ttk.Separator(self.ofc_frame).pack(fill=tk.X, pady=(5, 5))
         
-        self._add_city_grid(ofc_frame, "TARGET CITIES", self.var_ofc_vars)
-        self._add_date_range(ofc_frame, self.var_ofc_start, self.var_ofc_end)
+        self._add_city_grid(self.ofc_frame, "TARGET CITIES", self.var_ofc_vars)
+        self._add_date_range(self.ofc_frame, self.var_ofc_start, self.var_ofc_end)
 
         # Sync Checkbox
-        sync_frame = ttk.Frame(container, style="Surface.TFrame")
-        sync_frame.pack(fill=tk.X, pady=15)
+        self.sync_frame = ttk.Frame(container, style="Surface.TFrame")
+        self.sync_frame.pack(fill=tk.X, pady=15)
         
         def on_sync_toggle(*args):
             if self.var_sync_consular.get():
@@ -319,7 +338,7 @@ class App(tk.Tk):
                 self.cons_frame.pack(fill=tk.X, before=self.sq_main_frame)
 
         self.var_sync_consular.trace_add("write", on_sync_toggle)
-        cb_sync = ttk.Checkbutton(sync_frame, text="Keep Consular Location & Dates identical to OFC", 
+        cb_sync = ttk.Checkbutton(self.sync_frame, text="Keep Consular Location & Dates identical to OFC", 
                                  variable=self.var_sync_consular, style="Toolbutton")
         cb_sync.pack(anchor="w", pady=5)
 
@@ -332,7 +351,7 @@ class App(tk.Tk):
         self._add_city_grid(self.cons_frame, "TARGET CITIES", self.var_consular_vars)
         self._add_date_range(self.cons_frame, self.var_cons_start, self.var_cons_end)
 
-        # Initialize toggle state
+        # Initialize toggle state (will be corrected by _on_mode_change)
         if not self.var_sync_consular.get():
             self.cons_frame.pack(fill=tk.X)
 
@@ -391,6 +410,29 @@ class App(tk.Tk):
         
         self._update_active_bots_list()
 
+    def _on_mode_change(self):
+        """Show/hide OFC section and sync toggle based on the selected account mode."""
+        mode = self.var_action_mode.get()
+        if mode == "RESCHEDULE_CONSULAR":
+            # Hide OFC and sync
+            self.ofc_frame.pack_forget()
+            self.sync_frame.pack_forget()
+            # Always show consular
+            if not self.cons_frame.winfo_ismapped():
+                self.cons_frame.pack(fill=tk.X, before=self.sq_main_frame)
+        else:  # SNIPER
+            # Show OFC and sync
+            if not self.ofc_frame.winfo_ismapped():
+                self.ofc_frame.pack(fill=tk.X, pady=(10, 0), before=self.sync_frame)
+            if not self.sync_frame.winfo_ismapped():
+                self.sync_frame.pack(fill=tk.X, pady=15, before=self.cons_frame)
+            # Consular visibility controlled by sync toggle
+            if self.var_sync_consular.get():
+                self.cons_frame.pack_forget()
+            else:
+                if not self.cons_frame.winfo_ismapped():
+                    self.cons_frame.pack(fill=tk.X, before=self.sq_main_frame)
+
     def _on_account_select(self, event):
         sel = self.listbox.curselection()
         if not sel:
@@ -401,7 +443,8 @@ class App(tk.Tk):
         self.var_customer.set(acc.get("customer_name", ""))
         self.var_username.set(acc.get("username", ""))
         self.var_password.set(acc.get("password", ""))
-        
+        self.var_action_mode.set(acc.get("action_mode", "SNIPER"))
+
         ofc_cities = acc.get("ofcCities", [])
         for city, var in self.var_ofc_vars.items():
             var.set(city in ofc_cities)
@@ -426,6 +469,8 @@ class App(tk.Tk):
         else:
             self.var_sync_consular.set(False)
 
+        self._on_mode_change()
+
         self._clear_sq_rows()
         sq = acc.get("security_questions", {})
         for k, v in sq.items():
@@ -440,6 +485,7 @@ class App(tk.Tk):
         self.var_customer.set("")
         self.var_username.set("")
         self.var_password.set("")
+        self.var_action_mode.set("SNIPER")
         for var in self.var_ofc_vars.values(): var.set(True)
         for var in self.var_consular_vars.values(): var.set(True)
         self.var_ofc_start.set("2026-01-01")
@@ -447,6 +493,7 @@ class App(tk.Tk):
         self.var_cons_start.set("2026-01-01")
         self.var_cons_end.set("2026-12-31")
         self.var_sync_consular.set(True)
+        self._on_mode_change()
         self._clear_sq_rows()
         for _ in range(3): self._add_sq_row()
 
@@ -462,23 +509,34 @@ class App(tk.Tk):
             a = var_a.get().strip()
             if k: sq_dict[k] = a
 
-        ofc_cities = [city for city, var in self.var_ofc_vars.items() if var.get()]
-        ofc_start = self._format_date_iso(self.var_ofc_start.get().strip())
-        ofc_end = self._format_date_iso(self.var_ofc_end.get().strip())
+        action_mode = self.var_action_mode.get()
 
-        if self.var_sync_consular.get():
-            consular_cities = ofc_cities
-            consular_start = ofc_start
-            consular_end = ofc_end
-        else:
+        if action_mode == "RESCHEDULE_CONSULAR":
+            # Only consular fields are relevant
+            ofc_cities = []
+            ofc_start = ""
+            ofc_end = ""
             consular_cities = [city for city, var in self.var_consular_vars.items() if var.get()]
             consular_start = self._format_date_iso(self.var_cons_start.get().strip())
             consular_end = self._format_date_iso(self.var_cons_end.get().strip())
+        else:
+            ofc_cities = [city for city, var in self.var_ofc_vars.items() if var.get()]
+            ofc_start = self._format_date_iso(self.var_ofc_start.get().strip())
+            ofc_end = self._format_date_iso(self.var_ofc_end.get().strip())
+            if self.var_sync_consular.get():
+                consular_cities = ofc_cities
+                consular_start = ofc_start
+                consular_end = ofc_end
+            else:
+                consular_cities = [city for city, var in self.var_consular_vars.items() if var.get()]
+                consular_start = self._format_date_iso(self.var_cons_start.get().strip())
+                consular_end = self._format_date_iso(self.var_cons_end.get().strip())
 
         acc_data = {
             "customer_name": customer,
             "username": self.var_username.get().strip(),
             "password": self.var_password.get().strip(),
+            "action_mode": action_mode,
             "ofcCities": ofc_cities,
             "ofcStartDate": ofc_start,
             "ofcEndDate": ofc_end,
@@ -504,8 +562,9 @@ class App(tk.Tk):
         if messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this account?"):
             del self.accounts[self.current_account_idx]
             if self._save_accounts():
-                self._on_add_account()
                 self._refresh_listbox()
+                self._on_add_account()
+                self.update_idletasks()
 
     # ─── Orchestrator Tab ────────────────────────────────────────────────────
     # Keep the same as before
@@ -582,6 +641,7 @@ class App(tk.Tk):
         self.btn_start.state(["disabled"])
         self.btn_stop.state(["!disabled"])
         self.chk_monitor.state(["disabled"])
+        self.closed_bots.clear()
         
 
         self.txt_log.config(state=tk.NORMAL)
@@ -658,29 +718,67 @@ class App(tk.Tk):
             ttk.Label(self.bots_inner_frame, text="No bots are running.", foreground="#94a3b8").pack(pady=5, anchor=tk.W)
             return
 
-        customers = [a.get("customer_name") for a in self.accounts if a.get("customer_name")]
+        customers = [a.get("customer_name") for a in self.accounts if a.get("customer_name") and a.get("customer_name") not in self.closed_bots]
         for cust in customers:
             row = ttk.Frame(self.bots_inner_frame)
             row.pack(fill=tk.X, pady=2)
             
             ttk.Label(row, text=f"🤖 {cust}", font=("Segoe UI", 10, "bold"), width=25).pack(side=tk.LEFT, padx=(0, 10))
             
-            btn_book = ttk.Button(row, text="⚡ Manual Book", style="Primary.TButton", 
+            btn_book = ttk.Button(row, text="⚡ Manual Book", style="Primary.TButton",
                                   command=lambda c=cust: self._on_manual_book(c))
             btn_book.pack(side=tk.LEFT, padx=5)
-            
-            btn_close = ttk.Button(row, text="🛑 Close Bot", style="Danger.TButton", 
+
+            btn_reschedule = ttk.Button(row, text="📅 Consular Reschedule", style="Primary.TButton",
+                                        command=lambda c=cust: self._on_consular_reschedule(c))
+            btn_reschedule.pack(side=tk.LEFT, padx=5)
+
+            btn_close = ttk.Button(row, text="🛑 Close Bot", style="Danger.TButton",
                                    command=lambda c=cust: self._on_close_bot(c))
             btn_close.pack(side=tk.LEFT, padx=5)
 
     def _on_close_bot(self, customer):
         safe_name = customer.replace(" ", "_")
+
+        # ── 1. Signal orchestrator to terminate the Python runners ──────────
         stop_path = BASE_DIR / "src" / f".stop_{safe_name}"
         try:
             stop_path.touch(exist_ok=True)
-            self._log(f"[GUI] 🛑 Close signal sent to orchestrator for '{customer}'.")
+            self._log(f"[GUI] 🛑 Stop signal sent for '{customer}'.")
         except Exception as e:
-            self._log(f"[GUI] Error sending close signal for '{customer}': {e}")
+            self._log(f"[GUI] Warning: could not write stop file for '{customer}': {e}")
+
+        # ── 2. Kill the Chrome window by CDP port ────────────────────────────
+        # Derive the CDP port the same way the orchestrator does (9222 + index)
+        try:
+            customer_names = [a.get("customer_name") for a in self.accounts if a.get("customer_name")]
+            idx = customer_names.index(customer) if customer in customer_names else -1
+            if idx >= 0:
+                cdp_port = 9222 + idx
+                import subprocess as _sp
+                result = _sp.run(
+                    ["taskkill", "/F", "/FI", f"COMMANDLINE like *--remote-debugging-port={cdp_port}*"],
+                    capture_output=True, text=True
+                )
+                if "SUCCESS" in result.stdout:
+                    self._log(f"[GUI] 🖥️ Chrome window closed for '{customer}' (port {cdp_port}).")
+                else:
+                    self._log(f"[GUI] Chrome kill attempt for port {cdp_port}: {result.stdout.strip() or result.stderr.strip()}")
+        except Exception as e:
+            self._log(f"[GUI] Warning: could not kill Chrome for '{customer}': {e}")
+
+        # ── 3. Delete the state file ─────────────────────────────────────────
+        state_path = BASE_DIR / "src" / f"state_{customer}.json"
+        try:
+            if state_path.exists():
+                state_path.unlink()
+                self._log(f"[GUI] 🗑️ Deleted state file for '{customer}'.")
+        except Exception as e:
+            self._log(f"[GUI] Warning: could not delete state file for '{customer}': {e}")
+
+        # ── 4. Track as closed and refresh UI ───────────────────────────────
+        self.closed_bots.add(customer)
+        self._update_active_bots_list()
 
     def _on_manual_book(self, customer):
         if not customer:
@@ -713,6 +811,7 @@ class App(tk.Tk):
             existing.update({
                 "extension_running": False,
                 "pending": True,
+                "action_type": "SNIPER",
                 "ofcCities": acc.get("ofcCities", []),
                 "ofcStartDate": acc.get("ofcStartDate", ""),
                 "ofcEndDate": acc.get("ofcEndDate", ""),
@@ -724,6 +823,47 @@ class App(tk.Tk):
             state_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
             self._log(f"[GUI] ⚡ Manual trigger queued for '{customer}'.")
             messagebox.showinfo("Triggered", f"Trigger queued for '{customer}'.\nBooking runner will pick it up within 0.5s.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to write state file: {e}")
+
+    def _on_consular_reschedule(self, customer):
+        if not customer:
+            return
+
+        acc = next((a for a in self.accounts if a.get("customer_name") == customer), None)
+        if not acc:
+            return
+
+        state_path = BASE_DIR / "src" / f"state_{customer}.json"
+        try:
+            existing = {}
+            if state_path.exists():
+                try:
+                    existing = json.loads(state_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            if existing.get("extension_running"):
+                force = messagebox.askyesno(
+                    "Already Running?",
+                    f"The booking runner for '{customer}' reports it is already executing.\n\n"
+                    "This may be stale. Do you want to force a consular reschedule anyway?"
+                )
+                if not force:
+                    return
+
+            existing.update({
+                "extension_running": False,
+                "pending": True,
+                "action_type": "RESCHEDULE_CONSULAR",
+                "consularCities": acc.get("consularCities", []),
+                "consularStartDate": acc.get("consularStartDate", ""),
+                "consularEndDate": acc.get("consularEndDate", ""),
+                "customer_name": customer,
+            })
+            state_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            self._log(f"[GUI] 📅 Consular reschedule trigger queued for '{customer}'.")
+            messagebox.showinfo("Triggered", f"Consular reschedule queued for '{customer}'.\nBooking runner will pick it up within 0.5s.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to write state file: {e}")
 

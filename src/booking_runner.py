@@ -37,7 +37,7 @@ from playwright.async_api import async_playwright
 
 from src.auth.browser import connect_to_chrome
 from src.booking.cdp_client import ensure_on_portal
-from src.booking.executor import trigger_extension_booking
+from src.booking.executor import trigger_extension_booking, trigger_extension_reschedule
 
 load_dotenv()
 
@@ -76,12 +76,13 @@ def _set_flag(state_file: Path, **flags):
 async def run(cdp_port: int, customer: str):
     state_file = Path(__file__).parent / f"state_{customer}.json"
 
-    # Initialise state file — mark extension as not running on startup
-    _write_state(state_file, {
+    # Initialise state file — mark extension as not running on startup, but preserve pending triggers
+    existing_state = _read_state(state_file)
+    existing_state.update({
         "extension_running": False,
-        "pending": False,
         "customer_name": customer,
     })
+    _write_state(state_file, existing_state)
 
     async with async_playwright() as pw:
         browser, context, page = await connect_to_chrome(pw, cdp_port, log, handle_dialogs=True)
@@ -121,7 +122,9 @@ async def run(cdp_port: int, customer: str):
 
                 # Mark extension as running before we start
                 _set_flag(state_file, extension_running=True, pending=False)
-                log.info(f"📥 Pending trigger detected for '{customer}' — starting booking.")
+                log.info(f"📥 Pending trigger detected for '{customer}'.")
+
+                action_type = state.get("action_type")
 
                 trigger = {k: state[k] for k in [
                     "ofcCities", "ofcStartDate", "ofcEndDate",
@@ -138,27 +141,30 @@ async def run(cdp_port: int, customer: str):
                     log.warning("Page navigating — waiting for portal …")
                     await ensure_on_portal(page, log)
 
-                # ── Execute booking ────────────────────────────────────────
+                # ── Execute action ─────────────────────────────────────────
                 try:
-                    success = await trigger_extension_booking(page, trigger, log)
+                    if action_type == "SNIPER":
+                        log.info("🎯 Action type: SNIPER (OFC+Consular booking)")
+                        success = await trigger_extension_booking(page, trigger, log)
+                    elif action_type == "RESCHEDULE_CONSULAR":
+                        log.info("🔄 Action type: RESCHEDULE_CONSULAR")
+                        success = await trigger_extension_reschedule(page, trigger, log)
+                    else:
+                        log.error(f"❌ Unknown or missing action_type: {action_type!r} — skipping.")
+                        success = False
                 except Exception as e:
-                    log.error(f"Booking error: {e}", exc_info=True)
+                    log.error(f"Action error: {e}", exc_info=True)
                     success = False
+                    if "429" in str(e):
+                        log.error("429 Too Many Requests detected! Exiting bot2 with code 42 to signal a restart.")
+                        sys.exit(42)
 
                 if success:
                     log.info("=" * 60)
-                    log.info(f"✅ BOOKING DELEGATED SUCCESSFULLY for '{customer}'!")
+                    log.info(f"✅ ACTION COMPLETED SUCCESSFULLY for '{customer}'! [{action_type}]")
                     log.info("=" * 60)
-                    try:
-                        await page.screenshot(path="ofc_booked.png")
-                    except Exception:
-                        pass
                 else:
-                    log.error(f"❌ Booking failed for '{customer}'.")
-                    try:
-                        await page.screenshot(path="ofc_error.png")
-                    except Exception:
-                        pass
+                    log.error(f"❌ Action failed for '{customer}'. [{action_type}]")
 
                 # Mark extension as done
                 _set_flag(state_file, extension_running=False)

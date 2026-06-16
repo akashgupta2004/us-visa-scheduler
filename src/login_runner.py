@@ -110,9 +110,11 @@ async def run() -> None:
                 await wait_for_waiting_room(page, log, timeout_minutes=480)
                 await human_delay(1000, 2000)
 
-                # ── 3. Wait for login page ──────────────
-                log.info("Waiting for automatic redirect to login page (up to 5 minutes) …")
+                # ── 3. Wait for login page or Dashboard ──────────────
+                log.info("Waiting for automatic redirect (up to 5 minutes) …")
                 deadline = time.time() + 300
+                already_logged_in = False
+                
                 while time.time() < deadline:
                     try:
                         cur_url = page.url.lower()
@@ -123,38 +125,51 @@ async def run() -> None:
                     if any(k in cur_url for k in ["logon", "login", "signin"]):
                         log.info("Arrived at login page.")
                         break
+                        
+                    # Check if we bypassed login entirely (already logged in)
+                    if any(k in cur_url for k in ["/schedule", "dashboard", "applicant_details", "/en-us/"]):
+                        log.info("Already logged in! Reached dashboard directly.")
+                        already_logged_in = True
+                        break
+                        
                     await asyncio.sleep(5)
                 else:
                     log.warning("Did not auto-redirect in 5 minutes. Trying manual navigation …")
                     await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=120_000)
                     await wait_for_waiting_room(page, log, timeout_minutes=30)
+                    
+            if already_logged_in:
+                # Skip to step 5 / READY
+                pass
+            else:
+                await human_delay(1000, 2000)
 
-            await human_delay(1000, 2000)
+            if not already_logged_in:
+                # ── 4. Login ──────────────────────────────
+                success = False
+                for attempt in range(1, 4):
+                    log.info(f"Login attempt {attempt}/3")
+                    success = await login(page, args.username, args.password, FASTCAPTCHA_API_KEY, log)
+                    if success:
+                        break
+                    
+                    if attempt < 3:
+                        log.info("Retrying login...")
+                        await page.reload()
+                        await human_delay(3000, 5000)
 
-            # ── 4. Login ──────────────────────────────
-            success = False
-            for attempt in range(1, 4):
-                log.info(f"Login attempt {attempt}/3")
-                success = await login(page, args.username, args.password, FASTCAPTCHA_API_KEY, log)
-                if success:
-                    break
-                if attempt < 3:
-                    log.info("Retrying in 5 s …")
-                    await asyncio.sleep(5)
-                    await page.reload(wait_until="domcontentloaded")
-                    await human_delay(1500, 3000)
+                if not success:
+                    log.error("Login failed after 3 attempts.")
+                    await page.screenshot(path=f"login_failed_{args.customer}.png")
+                    return
 
-            if not success:
-                log.error("All login attempts failed.")
-                await page.screenshot(path=f"login_failed_{args.customer}.png")
-                return
-
-            # ── 5. Security question ──────────────────
-            await human_delay(1500, 3000)
-            if not await handle_security_question(page, args.customer, log):
-                log.error("Security question failed.")
-                await page.screenshot(path=f"security_question_failed_{args.customer}.png")
-                return
+            if not already_logged_in:
+                # ── 5. Security question ──────────────────
+                await human_delay(1500, 3000)
+                if not await handle_security_question(page, args.customer, log):
+                    log.error("Security question failed.")
+                    await page.screenshot(path=f"security_question_failed_{args.customer}.png")
+                    return
 
             # ── Signal orchestrator: login complete ───
             print(f"[READY] {args.customer}", flush=True)

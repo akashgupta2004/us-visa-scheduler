@@ -9,6 +9,10 @@ Usage:
 import sys
 import requests
 
+# Force UTF-8 output so emojis don't crash on Windows when piped
+sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
+
 SLACK_WEBHOOK = "https://hooks.slack.com/services/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"
 
 

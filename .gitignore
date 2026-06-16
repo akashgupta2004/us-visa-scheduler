@@ -69,6 +69,7 @@ trigger_*.json
 .DS_Store
 Thumbs.db
 *.bak
+pyproject.toml
 
 
 

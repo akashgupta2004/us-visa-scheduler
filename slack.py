@@ -3,7 +3,7 @@ slack.py — Send a message to the VisaBot Slack channel.
 
 Usage:
     python slack.py "Your message here"
-    python slack.py  (opens interactive prompt)
+    python slack.py  (opens interactive prompt).check 
 """
 
 import sys

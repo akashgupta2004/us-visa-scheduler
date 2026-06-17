@@ -4,7 +4,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 from src.monitor.matcher import safe_int
-from slack import send as slack_send
 
 SLOTS_ANALYSIS_FILE = Path(__file__).parent.parent.parent / "slots_data_analysis.csv"
 
@@ -45,24 +44,4 @@ def log_slots_for_analysis(rows):
     return logged_count
 
 
-def format_slack_message(customer, chosen_ofc, chosen_consular, matched_ofc_city, matched_consular_city):
-    return (
-        f"*Customer:* {customer['customer_name']}\n"
-        f"*Requested OFC:* {customer['ofc_location']}\n"
-        f"*Requested Consular:* {customer['consular_location']}\n"
-        f"*Matched OFC City:* {matched_ofc_city}\n"
-        f"*Matched Consular City:* {matched_consular_city}\n"
-        f"*Need before:* {customer['need_before'].strftime('%Y-%m-%d')}\n\n"
-        f"*OFC Date:* {chosen_ofc['display_date']}\n"
-        f"*OFC Slots Available:* {chosen_ofc['count']}\n\n"
-        f"*Consular Date:* {chosen_consular['display_date']}\n"
-        f"*Consular Slots Available:* {chosen_consular['count']}"
-    )
 
-
-def send_slack(msg):
-    slack_send(f"🎯 *Qualified slot match found*\n{msg}")
-
-
-def send_slack_error(msg):
-    slack_send(f"⚠️ *Slot Monitor Error*\n{msg}")

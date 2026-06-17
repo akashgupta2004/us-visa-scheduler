@@ -17,12 +17,32 @@ async def wait_for_waiting_room(page: Page, log: logging.Logger, timeout_minutes
             # Page is mid-navigation — wait and retry
             await asyncio.sleep(2)
             continue
+            
+        html_lower = html.lower()
+        if any(kw in html_lower for kw in ["schedule appointment", "reschedule appointment", "cancel appointment"]):
+            log.info("Dashboard keywords detected (e.g. Schedule Appointment). We are already logged in!")
+            return
         
-        in_queue = any(kw in html.lower() for kw in [
-            "waiting room", "you are in the queue", "queue position",
-            "estimated wait", "waitingroom", "cfwaitingroom", "waiting-room",
-            "just a moment", "verify you are human", "challenge-platform"
-        ]) or "moment" in title.lower()
+        title_lower = title.lower()
+        
+        # Check title for common waiting room/challenge indicators
+        in_queue = any(kw in title_lower for kw in [
+            "moment", "waiting room", "queue", "verify you are human", "attention required"
+        ])
+        
+        # If title doesn't match, check for specific visible Cloudflare elements
+        if not in_queue:
+            cf_elements = [
+                "#cf-please-wait", 
+                "[data-translate='challenge_headline']",
+                ".queue-position",
+                "#queuePosition",
+                "#waitTime"
+            ]
+            for sel in cf_elements:
+                if await page.locator(sel).is_visible():
+                    in_queue = True
+                    break
 
         if not in_queue:
             log.info(f"Waiting room cleared — URL: {page.url}")

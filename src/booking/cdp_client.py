@@ -13,12 +13,22 @@ async def ensure_on_portal(page: Page, log: logging.Logger, timeout_seconds: int
     automatically and the browser arrives on the portal on its own.
     We just need to wait for it — no manual navigation needed.
     """
+    def _is_valid(url: str) -> bool:
+        if not url.startswith("https://www.usvisascheduling.com"): return False
+        lower = url.lower()
+        if "/profile" in lower or "/account" in lower or "b2clogin.com" in lower: return False
+        return True
+
     deadline = asyncio.get_event_loop().time() + timeout_seconds
     while asyncio.get_event_loop().time() < deadline:
         try:
-            if page.url.startswith("https://www.usvisascheduling.com"):
-                log.info(f"On portal: {page.url}")
-                return True
+            if _is_valid(page.url):
+                # Wait for the page to finish rendering
+                await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                # Double check the URL hasn't changed during load
+                if _is_valid(page.url):
+                    log.info(f"On stable portal: {page.url}")
+                    return True
         except Exception:
             pass
         await asyncio.sleep(1)
@@ -31,9 +41,11 @@ async def ensure_on_portal(page: Page, log: logging.Logger, timeout_seconds: int
         deadline2 = asyncio.get_event_loop().time() + 60
         while asyncio.get_event_loop().time() < deadline2:
             try:
-                if page.url.startswith("https://www.usvisascheduling.com"):
-                    log.info(f"On portal: {page.url}")
-                    return True
+                if _is_valid(page.url):
+                    await page.wait_for_load_state("domcontentloaded", timeout=5000)
+                    if _is_valid(page.url):
+                        log.info(f"On stable portal: {page.url}")
+                        return True
             except Exception:
                 pass
             await asyncio.sleep(1)

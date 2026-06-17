@@ -4,7 +4,9 @@ import json
 import subprocess
 import threading
 import tkinter as tk
-from datetime import datetime
+import re
+import shutil
+from datetime import datetime, timedelta
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
 from tkcalendar import DateEntry
@@ -49,6 +51,18 @@ class App(tk.Tk):
         self._configure_styles()
         self._load_accounts()
         self._build_ui()
+        
+        self.protocol("WM_DELETE_WINDOW", self._on_closing)
+
+    def _on_closing(self):
+        """Ensure all background processes are killed when the user closes the GUI window with the 'X' button."""
+        if self.orchestrator_proc:
+            try:
+                import subprocess
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.orchestrator_proc.pid)], capture_output=True)
+            except Exception:
+                pass
+        self.destroy()
 
     def _configure_styles(self):
         style = ttk.Style(self)
@@ -194,6 +208,7 @@ class App(tk.Tk):
         self.var_cons_end = tk.StringVar()
         
         self.var_sync_consular = tk.BooleanVar(value=True)
+        self.var_prevent_immediate = tk.BooleanVar(value=False)
         self.sq_rows = []
 
         self._build_form()
@@ -268,7 +283,9 @@ class App(tk.Tk):
         
         start_frame = ttk.Frame(frame, style="Surface.TFrame")
         start_frame.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
-        ttk.Label(start_frame, text="START DATE", font=("Segoe UI", 9, "bold"), foreground="#94a3b8", style="Surface.TLabel").pack(anchor="w", pady=(0, 5))
+        start_hdr_frame = ttk.Frame(start_frame, style="Surface.TFrame")
+        start_hdr_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Label(start_hdr_frame, text="START DATE", font=("Segoe UI", 9, "bold"), foreground="#94a3b8", style="Surface.TLabel").pack(side=tk.LEFT, anchor="w")
         de_start = DateEntry(start_frame, textvariable=start_var, date_pattern='yyyy-mm-dd', 
                              style="DateEntry.TEntry",
                              background=ENTRY_BG, foreground=ENTRY_FG, headersbackground=SURFACE, 
@@ -335,7 +352,7 @@ class App(tk.Tk):
             if self.var_sync_consular.get():
                 self.cons_frame.pack_forget()
             else:
-                self.cons_frame.pack(fill=tk.X, before=self.sq_main_frame)
+                self.cons_frame.pack(fill=tk.X, before=self.options_frame)
 
         self.var_sync_consular.trace_add("write", on_sync_toggle)
         cb_sync = ttk.Checkbutton(self.sync_frame, text="Keep Consular Location & Dates identical to OFC", 
@@ -354,6 +371,14 @@ class App(tk.Tk):
         # Initialize toggle state (will be corrected by _on_mode_change)
         if not self.var_sync_consular.get():
             self.cons_frame.pack(fill=tk.X)
+
+        # Global Options
+        self.options_frame = ttk.Frame(container, style="Surface.TFrame")
+        self.options_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        cb_prevent = ttk.Checkbutton(self.options_frame, text="Prevent Immediate Booking (Dynamically skips slots within 3 days of today)", 
+                                 variable=self.var_prevent_immediate, style="Toolbutton")
+        cb_prevent.pack(anchor="w", pady=5)
 
         # Security Questions
         self.sq_main_frame = ttk.Frame(container, style="Surface.TFrame")
@@ -413,25 +438,23 @@ class App(tk.Tk):
     def _on_mode_change(self):
         """Show/hide OFC section and sync toggle based on the selected account mode."""
         mode = self.var_action_mode.get()
+        
+        # Safely hide all dynamic frames first
+        self.ofc_frame.pack_forget()
+        self.sync_frame.pack_forget()
+        self.cons_frame.pack_forget()
+
         if mode == "RESCHEDULE_CONSULAR":
-            # Hide OFC and sync
-            self.ofc_frame.pack_forget()
-            self.sync_frame.pack_forget()
-            # Always show consular
-            if not self.cons_frame.winfo_ismapped():
-                self.cons_frame.pack(fill=tk.X, before=self.sq_main_frame)
+            # Only show consular
+            self.cons_frame.pack(fill=tk.X, before=self.options_frame)
         else:  # SNIPER
-            # Show OFC and sync
-            if not self.ofc_frame.winfo_ismapped():
-                self.ofc_frame.pack(fill=tk.X, pady=(10, 0), before=self.sync_frame)
-            if not self.sync_frame.winfo_ismapped():
-                self.sync_frame.pack(fill=tk.X, pady=15, before=self.cons_frame)
+            # Pack in correct top-to-bottom order before options_frame
+            self.ofc_frame.pack(fill=tk.X, pady=(10, 0), before=self.options_frame)
+            self.sync_frame.pack(fill=tk.X, pady=15, before=self.options_frame)
+            
             # Consular visibility controlled by sync toggle
-            if self.var_sync_consular.get():
-                self.cons_frame.pack_forget()
-            else:
-                if not self.cons_frame.winfo_ismapped():
-                    self.cons_frame.pack(fill=tk.X, before=self.sq_main_frame)
+            if not self.var_sync_consular.get():
+                self.cons_frame.pack(fill=tk.X, before=self.options_frame)
 
     def _on_account_select(self, event):
         sel = self.listbox.curselection()
@@ -463,11 +486,15 @@ class App(tk.Tk):
         self.var_cons_start.set(self._format_date_display(cons_start or ofc_start))
         self.var_cons_end.set(self._format_date_display(cons_end or ofc_end))
 
-        # Check if lists match to set the sync toggle
-        if sorted(ofc_cities) == sorted(consular_cities):
+        # Check if lists and dates match to set the sync toggle
+        if (sorted(ofc_cities) == sorted(consular_cities) and 
+            ofc_start == cons_start and 
+            ofc_end == cons_end):
             self.var_sync_consular.set(True)
         else:
             self.var_sync_consular.set(False)
+
+        self.var_prevent_immediate.set(acc.get("prevent_immediate", False))
 
         self._on_mode_change()
 
@@ -493,6 +520,7 @@ class App(tk.Tk):
         self.var_cons_start.set("2026-01-01")
         self.var_cons_end.set("2026-12-31")
         self.var_sync_consular.set(True)
+        self.var_prevent_immediate.set(False)
         self._on_mode_change()
         self._clear_sq_rows()
         for _ in range(3): self._add_sq_row()
@@ -543,7 +571,8 @@ class App(tk.Tk):
             "consularCities": consular_cities,
             "consularStartDate": consular_start,
             "consularEndDate": consular_end,
-            "security_questions": sq_dict
+            "security_questions": sq_dict,
+            "prevent_immediate": self.var_prevent_immediate.get()
         }
 
         if self.current_account_idx is not None:
@@ -585,16 +614,16 @@ class App(tk.Tk):
         monitor_frame.pack(fill=tk.X, padx=10, pady=5)
         
         self.var_run_monitor = tk.BooleanVar(value=True)
-        self.var_monitor_interval = tk.StringVar(value="15")
+        self.var_max_fetches = tk.StringVar(value="")
         
         self.chk_monitor = ttk.Checkbutton(monitor_frame, text=" Run Slot Monitor ", variable=self.var_run_monitor, style="Toolbutton")
         self.chk_monitor.pack(side=tk.LEFT, padx=15, pady=10)
         
-        ttk.Label(monitor_frame, text="Polling Interval (seconds):", style="Subhead.TLabel").pack(side=tk.LEFT, padx=(20, 5))
-        ent_interval = tk.Entry(monitor_frame, textvariable=self.var_monitor_interval, bg=ENTRY_BG, fg=ENTRY_FG, 
+        ttk.Label(monitor_frame, text="Max API Fetches (empty = unlimited):", style="Subhead.TLabel").pack(side=tk.LEFT, padx=(20, 5))
+        ent_max = tk.Entry(monitor_frame, textvariable=self.var_max_fetches, bg=ENTRY_BG, fg=ENTRY_FG, 
                                 font=("Segoe UI", 10), insertbackground=TEXT, borderwidth=0, highlightthickness=1, 
-                                highlightbackground=BORDER, width=6)
-        ent_interval.pack(side=tk.LEFT, pady=10)
+                                highlightbackground=BORDER, width=8)
+        ent_max.pack(side=tk.LEFT, pady=10)
 
         self.bots_frame = ttk.Frame(self.tab_orchestrator, style="Surface.TFrame")
         self.bots_frame.pack(fill=tk.X, padx=10, pady=5)
@@ -628,6 +657,18 @@ class App(tk.Tk):
         if getattr(self, "var_autoscroll", None) and self.var_autoscroll.get():
             self.txt_log.see(tk.END)
         self.txt_log.config(state=tk.DISABLED)
+        self._write_log_to_file(text)
+
+    def _write_log_to_file(self, text):
+        log_dir = BASE_DIR / "logs"
+        log_dir.mkdir(exist_ok=True)
+        filename = "orchestrator.log"
+
+        try:
+            with open(log_dir / filename, "a", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except Exception:
+            pass
 
     def _start_orchestrator(self):
         if self.orchestrator_proc is not None:
@@ -643,6 +684,15 @@ class App(tk.Tk):
         self.chk_monitor.state(["disabled"])
         self.closed_bots.clear()
         
+        # Clear logs directory on restart
+        log_dir = BASE_DIR / "logs"
+        if log_dir.exists():
+            try:
+                shutil.rmtree(log_dir)
+            except Exception:
+                pass
+        log_dir.mkdir(exist_ok=True)
+        
 
         self.txt_log.config(state=tk.NORMAL)
         self.txt_log.delete(1.0, tk.END)
@@ -656,11 +706,13 @@ class App(tk.Tk):
             cmd.append("--no-monitor")
         else:
             try:
-                interval = int(self.var_monitor_interval.get())
-                if interval > 0:
-                    cmd.extend(["--monitor-interval", str(interval)])
+                max_fetches_val = self.var_max_fetches.get().strip()
+                if max_fetches_val:
+                    fetches = int(max_fetches_val)
+                    if fetches > 0:
+                        cmd.extend(["--max-fetches", str(fetches)])
             except ValueError:
-                self._log("[GUI] Warning: Invalid interval. Using defaults.")
+                self._log("[GUI] Warning: Invalid max fetches. Using defaults.")
         
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
@@ -692,12 +744,17 @@ class App(tk.Tk):
 
     def _stop_orchestrator(self):
         if self.orchestrator_proc:
-            self._log("[GUI] Sending termination signal to orchestrator...")
+            self._log("[GUI] Sending termination signal to orchestrator and all child processes...")
             self.btn_stop.state(["disabled"])
             try:
-                self.orchestrator_proc.terminate()
-            except Exception:
-                pass
+                import subprocess
+                # /T kills the process tree (including all spawned bots and Chrome windows)
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self.orchestrator_proc.pid)],
+                    capture_output=True
+                )
+            except Exception as e:
+                self._log(f"[GUI] Error during process tree termination: {e}")
         self._update_active_bots_list()
 
     def _on_orchestrator_exit(self):

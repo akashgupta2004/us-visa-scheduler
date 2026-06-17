@@ -27,6 +27,43 @@ def send(message: str, emoji: str = "💬") -> bool:
     except Exception as e:
         print(f"❌ Failed to send: {e}")
         return False
+def format_slack_message(customer, chosen_ofc, chosen_consular, matched_ofc_city, matched_consular_city):
+    ofc_cities_str = ", ".join(customer.get("ofc_cities", [])) or "N/A"
+    consular_cities_str = ", ".join(customer.get("consular_cities", []))
+    ofc_end = customer.get("ofc_end")
+    ofc_end_str = ofc_end.strftime("%Y-%m-%d") if ofc_end else "N/A"
+
+    lines = [
+        f"*Customer:* {customer['customer_name']}",
+        f"*Requested OFC Cities:* {ofc_cities_str}",
+        f"*Requested Consular Cities:* {consular_cities_str}",
+        f"*OFC Deadline:* {ofc_end_str}",
+    ]
+
+    if matched_ofc_city and chosen_ofc:
+        lines += [
+            f"",
+            f"*Matched OFC City:* {matched_ofc_city}",
+            f"*OFC Date:* {chosen_ofc['display_date']}",
+            f"*OFC Slots Available:* {chosen_ofc['count']}",
+        ]
+
+    lines += [
+        f"",
+        f"*Matched Consular City:* {matched_consular_city}",
+        f"*Consular Date:* {chosen_consular['display_date']}",
+        f"*Consular Slots Available:* {chosen_consular['count']}",
+    ]
+
+    return "\n".join(lines)
+
+
+def send_slack(msg: str):
+    return send(f"🎯 *Qualified slot match found*\n{msg}", emoji="")
+
+
+def send_slack_error(msg: str):
+    return send(f"⚠️ *Slot Monitor Error*\n{msg}", emoji="")
 
 
 if __name__ == "__main__":

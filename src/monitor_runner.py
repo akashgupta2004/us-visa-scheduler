@@ -14,6 +14,7 @@ import hashlib
 import os
 import sys
 from pathlib import Path
+from datetime import datetime, timedelta
 
 # Force UTF-8 output so emojis don't crash on Windows when piped
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
@@ -22,7 +23,8 @@ import argparse
 
 from src.monitor.api import fetch_rows
 from src.monitor.matcher import build_buckets, find_valid_pair, find_valid_consular_slot, parse_date, normalize_city
-from src.monitor.notifier import log_slots_for_analysis, send_slack, format_slack_message, send_slack_error
+from src.monitor.notifier import log_slots_for_analysis
+from slack import format_slack_message, send_slack, send_slack_error
 
 ACCOUNTS_FILE = Path(__file__).parent.parent / "accounts.json"
 STATE_FILE = Path(__file__).parent.parent / "slot_alert_state.json"
@@ -115,27 +117,33 @@ def load_customers():
             "ofc_end":         parse_date(ofc_end),
             "consular_start":  parse_date(consular_start),
             "consular_end":    parse_date(consular_end),
+            "prevent_immediate": entry.get("prevent_immediate", False)
         })
 
     return customers
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--interval", type=int, help="Polling interval in seconds")
-    args, _ = parser.parse_known_args()
+    parser.add_argument("--max-fetches", type=int, default=None, help="Max number of times to fetch from API")
+    args = parser.parse_args()
 
-    if args.interval:
-        POLL_MIN_SECONDS = args.interval
-        POLL_MAX_SECONDS = max(args.interval, args.interval + 2)
+    max_fetches = args.max_fetches
+    fetches_count = 0
 
-    print(f"Running qualified slot monitor (interval ~{POLL_MIN_SECONDS}s)...")
+    print(f"Running qualified slot monitor (interval ~{POLL_MIN_SECONDS}s, max_fetches={max_fetches if max_fetches else 'unlimited'})...")
     state = load_state()
     customers = load_customers()
 
     while True:
+        if max_fetches is not None and fetches_count >= max_fetches:
+            print(f"🛑 Reached maximum limit of {max_fetches} API fetches. Monitor stopping.")
+            break
+
         try:
             rows = fetch_rows()
+            fetches_count += 1
             if not rows:
+                print("⚠️ API returned empty slot data (no rows). Monitor is still running, waiting for next poll...")
                 time.sleep(random.uniform(POLL_MIN_SECONDS, POLL_MAX_SECONDS))
                 continue
 
@@ -146,6 +154,16 @@ if __name__ == "__main__":
             for customer in customers:
                 customer_name = customer["customer_name"]
                 action_mode = customer["action_mode"]
+
+                # Apply Prevent Immediate Booking logic dynamically
+                if customer.get("prevent_immediate"):
+                    dynamic_start = datetime.today() + timedelta(days=3)
+                    dynamic_start = dynamic_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                    
+                    if not customer["ofc_start"] or customer["ofc_start"] < dynamic_start:
+                        customer["ofc_start"] = dynamic_start
+                    if not customer["consular_start"] or customer["consular_start"] < dynamic_start:
+                        customer["consular_start"] = dynamic_start
 
                 if action_mode == "RESCHEDULE_CONSULAR":
                     # ── Consular Reschedule Only path ────────────────────────────
@@ -163,6 +181,9 @@ if __name__ == "__main__":
                         customer_name, "", matched_consular_city,
                         "", consular_slot["display_date"],
                     )
+
+                    if not should_alert(alert_key, state):
+                        continue
 
                     send_slack(
                         format_slack_message(
@@ -191,7 +212,8 @@ if __name__ == "__main__":
                         "extension_running": False,
                         "pending": True,
                         "action_type": "RESCHEDULE_CONSULAR",
-                        "consularCities": [matched_consular_city],
+                        "consularCities": customer["consular_cities"],
+                        "consularPriorityCity": matched_consular_city,
                         "consularStartDate": customer["consular_start"].strftime("%Y-%m-%d"),
                         "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
                         "customer_name": customer_name,
@@ -225,6 +247,9 @@ if __name__ == "__main__":
                         consular["display_date"],
                     )
 
+                    if not should_alert(alert_key, state):
+                        continue
+
                     send_slack(
                         format_slack_message(
                             customer,
@@ -256,10 +281,12 @@ if __name__ == "__main__":
                         "extension_running": False,
                         "pending": True,
                         "action_type": "SNIPER",
-                        "ofcCities": [matched_ofc_city],
+                        "ofcCities": customer["ofc_cities"],
+                        "ofcPriorityCity": matched_ofc_city,
                         "ofcStartDate": customer["ofc_start"].strftime("%Y-%m-%d"),
                         "ofcEndDate": customer["ofc_end"].strftime("%Y-%m-%d"),
-                        "consularCities": [matched_consular_city],
+                        "consularCities": customer["consular_cities"],
+                        "consularPriorityCity": matched_consular_city,
                         "consularStartDate": customer["consular_start"].strftime("%Y-%m-%d"),
                         "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
                         "customer_name": customer_name,
@@ -276,5 +303,6 @@ if __name__ == "__main__":
             except Exception as slack_e:
                 print(f"❌ Failed to send Slack error notification: {slack_e}")
             time.sleep(ERROR_BACKOFF_SECONDS)
+            continue
 
         time.sleep(random.uniform(POLL_MIN_SECONDS, POLL_MAX_SECONDS))

@@ -107,6 +107,9 @@ async def run() -> None:
     async with async_playwright() as pw:
         browser, context, page = await connect_to_chrome(pw, args.cdp_port, log)
 
+        disconnect_event = asyncio.Event()
+        browser.on("disconnected", lambda _: disconnect_event.set())
+
         try:
             # ── 1. & 2. Open site & wait ──────────────
             already_logged_in = False
@@ -185,7 +188,7 @@ async def run() -> None:
                 if not success:
                     log.error("Login failed after 3 attempts.")
                     await page.screenshot(path=f"login_failed_{args.customer}.png")
-                    return
+                    sys.exit(1)
 
             if not already_logged_in:
                 # ── 5. Security question ──────────────────
@@ -193,7 +196,7 @@ async def run() -> None:
                 if not await handle_security_question(page, args.customer, log):
                     log.error("Security question failed.")
                     await page.screenshot(path=f"security_question_failed_{args.customer}.png")
-                    return
+                    sys.exit(1)
 
             # ── Signal orchestrator: login complete ───
             print(f"[READY] {args.customer}", flush=True)
@@ -206,17 +209,21 @@ async def run() -> None:
             log.info("=" * 60)
 
             # Keep the browser open so bot2 can use this session
-            await asyncio.Event().wait()
+            # If the user manually closes Chrome, disconnect_event will trigger and we will exit.
+            await disconnect_event.wait()
+            log.error("Browser was disconnected (closed). Exiting login runner...")
+            sys.exit(99)
 
         except KeyboardInterrupt:
             log.info("Stopped by user.")
         except Exception as e:
-            log.error(f"Error: {e}", exc_info=True)
+            log.error(f"Unexpected error: {e}", exc_info=True)
             try:
                 await page.screenshot(path=f"error_{args.customer}.png")
                 log.info(f"Screenshot → error_{args.customer}.png")
             except Exception:
                 pass
+            sys.exit(1)
 
 
 if __name__ == "__main__":

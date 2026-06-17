@@ -28,6 +28,9 @@ import threading
 import signal
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from slack import send as slack_send
+
 # ─────────────────────────────────────────────────────────────
 ACCOUNTS_FILE   = Path(__file__).parent.parent / "accounts.json"
 BOT_SCRIPT      = Path(__file__).parent / "login_runner.py"
@@ -79,6 +82,7 @@ def spawn_login_runner(account: dict, cdp_port: int, profile_dir: str) -> subpro
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
         bufsize=1,
         cwd=str(Path(__file__).parent.parent),
     )
@@ -98,25 +102,49 @@ def spawn_booking_runner(account: dict, cdp_port: int) -> subprocess.Popen:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
         bufsize=1,
         cwd=str(Path(__file__).parent.parent),
     )
 
 
-def spawn_monitor(interval: int | None = None) -> subprocess.Popen:
+def spawn_monitor(max_fetches: int | None = None) -> subprocess.Popen:
     """Launch the slot monitor in the background."""
     log("▶  Starting slot monitor …")
     cmd = [PYTHON, str(MONITOR_SCRIPT)]
-    if interval:
-        cmd.extend(["--interval", str(interval)])
+    if max_fetches:
+        cmd.extend(["--max-fetches", str(max_fetches)])
     return subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
         bufsize=1,
         cwd=str(Path(__file__).parent.parent),
     )
+
+
+def kill_chrome_by_port(cdp_port: int) -> None:
+    """Kill the Chrome process listening on the given CDP port."""
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True, text=True
+        )
+        pid = None
+        for line in result.stdout.splitlines():
+            if f":{cdp_port}" in line and "LISTENING" in line:
+                parts = line.split()
+                pid = parts[-1]
+                break
+        if pid and pid.isdigit():
+            subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True)
+            log(f"🖥️  Killed Chrome PID {pid} on port {cdp_port}")
+        else:
+            log(f"⚠️  No Chrome process found on port {cdp_port} to kill")
+    except Exception as e:
+        log(f"⚠️  Failed to kill Chrome on port {cdp_port}: {e}")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -147,7 +175,7 @@ import argparse
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-monitor", action="store_true", help="Disable the slot monitor")
-    parser.add_argument("--monitor-interval", type=int, default=None, help="Slot monitor polling interval in seconds")
+    parser.add_argument("--max-fetches", type=int, default=None, help="Max number of times the monitor will fetch from the API")
     args = parser.parse_args()
 
     accounts = load_accounts()
@@ -157,6 +185,9 @@ def main() -> None:
 
     def shutdown(signum=None, frame=None):
         log("Shutting down all child processes …")
+        for session in sessions:
+            kill_chrome_by_port(session.get("cdp_port"))
+
         for p in all_procs:
             try:
                 p.terminate()
@@ -202,6 +233,7 @@ def main() -> None:
             "cdp_port":    cdp_port,
             "login_proc":    login_proc,
             "ready_event": ready_event,
+            "restart_history": [],
         })
 
     # ── Wait for each bot to log in, then start bot2 ──────────
@@ -231,7 +263,7 @@ def main() -> None:
 
     # ── Start slot monitor ────────────────────────────────────
     if not args.no_monitor:
-        monitor_proc = spawn_monitor(args.monitor_interval)
+        monitor_proc = spawn_monitor(args.max_fetches)
         all_procs.append(monitor_proc)
         threading.Thread(
             target=relay_output,
@@ -247,6 +279,10 @@ def main() -> None:
     try:
         while True:
             time.sleep(5)
+            
+            # Clean up dead processes from all_procs
+            all_procs[:] = [p for p in all_procs if p.poll() is None]
+
             # Check for individual bot stop requests or unexpected exits
             for session in sessions:
                 proc = session.get("login_proc")
@@ -255,9 +291,10 @@ def main() -> None:
                 safe_name = customer.replace(' ', '_')
                 
                 # If UI requested to stop this bot
-                stop_file = Path(f".stop_{safe_name}")
+                stop_file = Path(__file__).parent / f".stop_{safe_name}"
                 if stop_file.exists():
                     log(f"🛑 UI requested shutdown for '{customer}'")
+                    kill_chrome_by_port(session["cdp_port"])
                     if booking_proc and booking_proc.poll() is None:
                         booking_proc.terminate()
                     if proc and proc.poll() is None:
@@ -268,8 +305,47 @@ def main() -> None:
                     continue
 
                 if proc and proc.poll() is not None:
-                    log(f"⚠️  login:{customer} exited with code {proc.returncode}")
+                    code = proc.returncode
+                    log(f"⚠️  login:{customer} exited with code {code}")
                     session["login_proc"] = None
+                    if booking_proc and booking_proc.poll() is None:
+                        booking_proc.terminate()
+                        session["booking_proc"] = None
+                        
+                    if code == 99:
+                        log(f"🛑 Chrome window for '{customer}' was manually closed. Aborting auto-restart.")
+                        continue
+                        
+                    # ── Auto-restart on login crash ───────────────────────
+                    log(f"🔄 Restarting login for '{customer}' after crash …")
+                    
+                    now = time.time()
+                    history = session.setdefault("restart_history", [])
+                    history.append(now)
+                    history[:] = [t for t in history if now - t < 300]
+                    if len(history) > 3:
+                        log(f"⚠️  Too many rapid restarts for '{customer}'. Waiting 60s...")
+                        time.sleep(60)
+                        history.clear()
+                        
+                    kill_chrome_by_port(session["cdp_port"])
+                    time.sleep(4)
+                    p_dir = str(Path(__file__).parent.parent / f"chrome_profile_{customer}")
+                    new_proc = spawn_login_runner(session["account"], session["cdp_port"], p_dir)
+                    all_procs.append(new_proc)
+                    session["login_proc"] = new_proc
+                    new_ready_event = threading.Event()
+                    session["ready_event"] = new_ready_event
+                    threading.Thread(
+                        target=relay_output,
+                        args=(new_proc, f"login:{customer}", new_ready_event),
+                        daemon=True,
+                    ).start()
+                    threading.Thread(
+                        target=wait_and_spawn_booking_runner,
+                        args=(session,),
+                        daemon=True,
+                    ).start()
 
                 if booking_proc and booking_proc.poll() is not None:
                     code = booking_proc.returncode
@@ -284,26 +360,58 @@ def main() -> None:
                             time.sleep(25 * 60)
                             c_name = sess_dict["account"]["customer_name"]
                             log(f"🔄 Restarting bot for '{c_name}' after 25m delay ...")
-                            
                             p_dir = str(Path(__file__).parent.parent / f"chrome_profile_{c_name}")
+                            kill_chrome_by_port(sess_dict["cdp_port"])
+                            time.sleep(4)
                             new_proc = spawn_login_runner(sess_dict["account"], sess_dict["cdp_port"], p_dir)
                             all_procs.append(new_proc)
                             sess_dict["login_proc"] = new_proc
-                            
                             new_ready_event = threading.Event()
                             sess_dict["ready_event"] = new_ready_event
-                            
                             threading.Thread(
                                 target=relay_output,
                                 args=(new_proc, f"login:{c_name}", new_ready_event),
                                 daemon=True,
                             ).start()
-                            
                             wait_and_spawn_booking_runner(sess_dict)
 
                         threading.Thread(target=delayed_restart, args=(session,), daemon=True).start()
                     else:
-                        log(f"⚠️  booking:{customer} exited with code {code}")
+                        # Session expiry or unexpected booking crash — restart immediately
+                        log(f"⚠️  booking:{customer} exited with code {code} — restarting bot …")
+                        
+                        # Don't spam Slack for routine 10-minute inactivity restarts
+                        if proc and proc.poll() is None:
+                            proc.terminate()
+                        session["login_proc"] = None
+                        
+                        now = time.time()
+                        history = session.setdefault("restart_history", [])
+                        history.append(now)
+                        history[:] = [t for t in history if now - t < 300]
+                        if len(history) > 3:
+                            log(f"⚠️  Too many rapid restarts for '{customer}'. Waiting 60s...")
+                            time.sleep(60)
+                            history.clear()
+                            
+                        kill_chrome_by_port(session["cdp_port"])
+                        time.sleep(4)
+                        p_dir = str(Path(__file__).parent.parent / f"chrome_profile_{customer}")
+                        new_proc = spawn_login_runner(session["account"], session["cdp_port"], p_dir)
+                        all_procs.append(new_proc)
+                        session["login_proc"] = new_proc
+                        new_ready_event = threading.Event()
+                        session["ready_event"] = new_ready_event
+                        threading.Thread(
+                            target=relay_output,
+                            args=(new_proc, f"login:{customer}", new_ready_event),
+                            daemon=True,
+                        ).start()
+                        threading.Thread(
+                            target=wait_and_spawn_booking_runner,
+                            args=(session,),
+                            daemon=True,
+                        ).start()
     except KeyboardInterrupt:
         shutdown()
 

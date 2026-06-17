@@ -59,9 +59,11 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
 
     config = {
         "ofcCities": ofcCities,
+        "ofcPriorityCity": normalize_city(trigger.get("ofcPriorityCity", ofcCities[0] if ofcCities else "")),
         "ofcStartDate": trigger.get("ofcStartDate", ""),
         "ofcEndDate": trigger.get("ofcEndDate", ""),
         "consularCities": consularCities,
+        "consularPriorityCity": normalize_city(trigger.get("consularPriorityCity", consularCities[0] if consularCities else "")),
         "consularStartDate": trigger.get("consularStartDate", ""),
         "consularEndDate": trigger.get("consularEndDate", ""),
     }
@@ -94,12 +96,28 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
 
     deadline = time.time() + 120
     while time.time() < deadline:
-        result = await page.evaluate("window.__sniperResult")
+        try:
+            result = await page.evaluate("window.__sniperResult")
+        except Exception as e:
+            if "Execution context was destroyed" in str(e):
+                log.info("Navigation detected while waiting for extension...")
+                for _ in range(5):
+                    await asyncio.sleep(1)
+                    if "appointment-confirmation" in page.url:
+                        log.info("✅ Booking SUCCESS (verified via URL navigation)")
+                        return True
+                log.warning(f"Navigated to unexpected URL: {page.url}")
+                return False
+            raise e
+
         if result is not None:
             status = result.get("status", "unknown")
             msg = result.get("msg", "No message")
 
-            await page.evaluate("window.__sniperResult = null;")
+            try:
+                await page.evaluate("window.__sniperResult = null;")
+            except Exception:
+                pass
 
             if status == "success":
                 log.info(f"✅ Booking SUCCESS: {msg}")
@@ -108,6 +126,8 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
                 log.error(f"❌ Booking FAILURE: {msg}")
                 if "429" in msg:
                     raise Exception("429 Too Many Requests")
+                if "Session expired" in msg:
+                    raise Exception("Session expired")
                 return False
 
         await asyncio.sleep(1)
@@ -138,6 +158,7 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
 
     config = {
         "consularCities": consularCities,
+        "consularPriorityCity": normalize_city(trigger.get("consularPriorityCity", consularCities[0] if consularCities else "")),
         "consularStartDate": trigger.get("consularStartDate", ""),
         "consularEndDate": trigger.get("consularEndDate", ""),
     }
@@ -169,12 +190,28 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
 
     deadline = time.time() + 120
     while time.time() < deadline:
-        result = await page.evaluate("window.__rescheduleResult")
+        try:
+            result = await page.evaluate("window.__rescheduleResult")
+        except Exception as e:
+            if "Execution context was destroyed" in str(e):
+                log.info("Navigation detected while waiting for extension...")
+                for _ in range(5):
+                    await asyncio.sleep(1)
+                    if "appointment-confirmation" in page.url:
+                        log.info("✅ Reschedule SUCCESS (verified via URL navigation)")
+                        return True
+                log.warning(f"Navigated to unexpected URL: {page.url}")
+                return False
+            raise e
+
         if result is not None:
             status = result.get("status", "unknown")
             msg = result.get("msg", "No message")
 
-            await page.evaluate("window.__rescheduleResult = null;")
+            try:
+                await page.evaluate("window.__rescheduleResult = null;")
+            except Exception:
+                pass
 
             if status == "success":
                 log.info(f"✅ Reschedule SUCCESS: {msg}")
@@ -183,6 +220,8 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
                 log.error(f"❌ Reschedule FAILURE: {msg}")
                 if "429" in msg:
                     raise Exception("429 Too Many Requests")
+                if "Session expired" in msg:
+                    raise Exception("Session expired")
                 return False
 
         await asyncio.sleep(1)

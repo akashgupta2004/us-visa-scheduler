@@ -69,7 +69,7 @@ def build_buckets(rows):
         display_date = row.get("start_date", "")
         date_obj = parse_date(display_date)
 
-        if not city or count < 1 or not date_obj:
+        if not city or count < 2 or not date_obj:
             continue
 
         item = {
@@ -115,7 +115,7 @@ def find_valid_pair(ofc_buckets, consular_buckets, ofc_candidate_cities, consula
 
             for ofc in ofc_rows:
                 for consular in consular_rows:
-                    if ofc["date"] <= consular["date"]:
+                    if ofc["date"] < consular["date"]:
                         if best_pair is None:
                             best_pair = (ofc, consular)
                             best_ofc_matches = ofc_rows

@@ -1,25 +1,29 @@
 import os
 import csv
+import json
 import time
 from datetime import datetime
 from pathlib import Path
 from src.monitor.matcher import safe_int
 
-SLOTS_ANALYSIS_FILE = Path(__file__).parent.parent.parent / "slots_data_analysis.csv"
+SLOTS_ANALYSIS_CSV = Path(__file__).parent.parent.parent / "slots_data_analysis.csv"
+SLOTS_ANALYSIS_JSON = Path(__file__).parent.parent.parent / "slots_data_analysis.jsonl"
 
 def log_slots_for_analysis(rows):
     if not rows:
         return 0
         
-    file_exists = os.path.isfile(SLOTS_ANALYSIS_FILE)
+    csv_exists = os.path.isfile(SLOTS_ANALYSIS_CSV)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logged_count = 0
     
     try:
-        with open(SLOTS_ANALYSIS_FILE, 'a', newline='', encoding='utf-8') as csvfile:
+        with open(SLOTS_ANALYSIS_CSV, 'a', newline='', encoding='utf-8') as csvfile, \
+             open(SLOTS_ANALYSIS_JSON, 'a', encoding='utf-8') as jsonfile:
+             
             fieldnames = ['timestamp', 'appointment_type', 'visa_location', 'start_date', 'slots']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            if not file_exists:
+            if not csv_exists:
                 writer.writeheader()
                 
             for row in rows:
@@ -28,6 +32,7 @@ def log_slots_for_analysis(rows):
                 appt_type = "OFC" if "VAC" in str(loc).upper() else "Consular"
                 
                 if slots > 0:
+                    # Write to CSV
                     writer.writerow({
                         'timestamp': timestamp,
                         'appointment_type': appt_type,
@@ -35,13 +40,15 @@ def log_slots_for_analysis(rows):
                         'start_date': row.get("start_date", ""),
                         'slots': slots
                     })
+                    
+                    # Write to JSON Lines
+                    row_copy = dict(row)
+                    row_copy["fetch_timestamp"] = timestamp
+                    row_copy["appointment_type"] = appt_type
+                    jsonfile.write(json.dumps(row_copy) + "\n")
+                    
                     logged_count += 1
-                else:
-                    print(f"[{timestamp}] 0 slots for {appt_type} at {loc}")
     except Exception as e:
         print(f"File write error: {e}")
         
     return logged_count
-
-
-

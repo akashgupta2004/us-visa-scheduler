@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import logging
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -22,6 +23,9 @@ from src.auth.browser import ensure_chrome_debug_running, connect_to_chrome
 from src.auth.login import wait_for_waiting_room, login
 from src.auth.security import handle_security_question
 from src.auth.utils import human_delay
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from slack import send_slack_error
 
 load_dotenv()
 
@@ -41,6 +45,14 @@ def _is_portal_url(url: str) -> bool:
         and not _is_login_url(url)
         and any(k in url for k in ["/schedule", "dashboard", "applicant_details", "/en-us/"])
     )
+
+def safe_id(username: str) -> str:
+    """Generate a filesystem-safe unique identifier from a username/email."""
+    return re.sub(r'[^a-zA-Z0-9]', '_', str(username))
+
+def _get_state_file(args) -> Path:
+    uid = safe_id(args.username)
+    return Path(__file__).parent / f"state_{uid}.json"
 
 def _get_args() -> argparse.Namespace:
     """Parse CLI arguments once, caching the result."""
@@ -62,7 +74,7 @@ def _get_args() -> argparse.Namespace:
     if not _ARGS.customer:
         _ARGS.customer = _ARGS.username
     if not _ARGS.profile_dir:
-        _ARGS.profile_dir = str(Path(__file__).parent.parent / f"chrome_profile_{_ARGS.customer}")
+        _ARGS.profile_dir = str(Path(__file__).parent.parent / f"chrome_profile_{safe_id(_ARGS.username)}")
     return _ARGS
 
 def _make_logger(customer: str) -> logging.Logger:
@@ -174,29 +186,39 @@ async def run() -> None:
                     return
 
                 success = False
-                for attempt in range(1, 4):
-                    log.info(f"Login attempt {attempt}/3")
+                for attempt in range(1, 6):
+                    log.info(f"Login attempt {attempt}/5")
                     success = await login(page, args.username, args.password, FASTCAPTCHA_API_KEY, log)
                     if success:
                         break
                     
-                    if attempt < 3:
+                    if attempt < 5:
                         log.info("Retrying login...")
                         await page.reload()
                         await human_delay(3000, 5000)
 
                 if not success:
-                    log.error("Login failed after 3 attempts.")
+                    log.error("Login failed after 5 attempts.")
+                    try:
+                        send_slack_error(f"❌ *Login Failed*: `{args.customer}` could not log in after 5 consecutive attempts. Bot is restarting.")
+                    except Exception as e:
+                        log.error(f"Failed to send Slack alert: {e}")
                     await page.screenshot(path=f"login_failed_{args.customer}.png")
                     sys.exit(1)
 
             if not already_logged_in:
                 # ── 5. Security question ──────────────────
                 await human_delay(1500, 3000)
-                if not await handle_security_question(page, args.customer, log):
+                if not await handle_security_question(page, args.username, log):
                     log.error("Security question failed.")
                     await page.screenshot(path=f"security_question_failed_{args.customer}.png")
                     sys.exit(1)
+                
+                try:
+                    log.info("Waiting for portal redirect after login...")
+                    await page.wait_for_url("**/*usvisascheduling.com/en-US*", timeout=30_000)
+                except Exception as e:
+                    log.warning(f"Timeout waiting for portal redirect: {e}")
 
             # ── Signal orchestrator: login complete ───
             print(f"[READY] {args.customer}", flush=True)

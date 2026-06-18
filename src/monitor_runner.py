@@ -13,6 +13,7 @@ import json
 import hashlib
 import os
 import sys
+import re
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -46,9 +47,9 @@ def load_state():
 def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
-def make_alert_key(customer_name, ofc_city, consular_city, ofc_date, consular_date):
-    raw = f"{customer_name}|{ofc_city}|{consular_city}|{ofc_date}|{consular_date}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+def make_alert_key(uid, ofc_city, consular_city, ofc_date, consular_date):
+    raw = f"{uid}|{ofc_city}|{consular_city}|{ofc_date}|{consular_date}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 def should_alert(alert_key, state):
     last_sent = state.get(alert_key, 0)
@@ -66,6 +67,10 @@ def _read_bot_state(state_file: Path) -> dict:
 
 def _write_bot_state(state_file: Path, state: dict):
     state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+def safe_id(username: str) -> str:
+    """Generate a filesystem-safe unique identifier from a username/email."""
+    return re.sub(r'[^a-zA-Z0-9]', '_', str(username))
 
 def load_customers():
     if not ACCOUNTS_FILE.exists():
@@ -90,9 +95,12 @@ def load_customers():
     ]
     customers = []
     for entry in raw:
-        customer_name = str(entry.get("customer_name", "")).strip()
-        if not customer_name:
+        username = str(entry.get("username", "")).strip()
+        if not username:
+            print("⚠️ Skipping account without username.")
             continue
+            
+        customer_name = str(entry.get("customer_name", "")).strip() or username
 
         action_mode = entry.get("action_mode", "SNIPER")
         required_fields = required_fields_reschedule if action_mode == "RESCHEDULE_CONSULAR" else required_fields_sniper
@@ -109,6 +117,8 @@ def load_customers():
         consular_end = entry["consularEndDate"]
 
         customers.append({
+            "username":      username,
+            "uid":           safe_id(username),
             "customer_name": customer_name,
             "action_mode":   action_mode,
             "ofc_cities":      [normalize_city(c) for c in ofc_cities],
@@ -154,6 +164,7 @@ if __name__ == "__main__":
             for customer in customers:
                 customer_name = customer["customer_name"]
                 action_mode = customer["action_mode"]
+                uid = customer["uid"]
 
                 # Apply Prevent Immediate Booking logic dynamically
                 if customer.get("prevent_immediate"):
@@ -178,7 +189,7 @@ if __name__ == "__main__":
                         continue
 
                     alert_key = make_alert_key(
-                        customer_name, "", matched_consular_city,
+                        uid, "", matched_consular_city,
                         "", consular_slot["display_date"],
                     )
 
@@ -201,22 +212,27 @@ if __name__ == "__main__":
                         f"Consular {matched_consular_city} {consular_slot['display_date']} ({consular_slot['count']} slots)"
                     )
 
-                    state_file = Path(__file__).parent / f"state_{customer_name}.json"
+                    state_file = Path(__file__).parent / f"state_{uid}.json"
                     bot_state = _read_bot_state(state_file)
 
                     if bot_state.get("extension_running"):
                         print(f"⏭️  Extension already running for '{customer_name}' — skipping.")
                         continue
 
+                    if bot_state.get("pending"):
+                        print(f"⚠️ Overwriting unhandled pending trigger for '{customer_name}' with newer reschedule slot.")
+
                     bot_state.update({
                         "extension_running": False,
                         "pending": True,
+                        "trigger_timestamp": time.time(),
                         "action_type": "RESCHEDULE_CONSULAR",
                         "consularCities": customer["consular_cities"],
                         "consularPriorityCity": matched_consular_city,
                         "consularStartDate": customer["consular_start"].strftime("%Y-%m-%d"),
                         "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
                         "customer_name": customer_name,
+                        "prevent_immediate": customer.get("prevent_immediate", False),
                     })
                     _write_bot_state(state_file, bot_state)
                     print(f"✅ Reschedule trigger queued for '{customer_name}'.")
@@ -240,7 +256,7 @@ if __name__ == "__main__":
                     ofc, consular = valid_pair
 
                     alert_key = make_alert_key(
-                        customer_name,
+                        uid,
                         matched_ofc_city,
                         matched_consular_city,
                         ofc["display_date"],
@@ -268,7 +284,8 @@ if __name__ == "__main__":
                     )
 
                     # ── Signal bot2 to book immediately ────────────────────────
-                    state_file = Path(__file__).parent / f"state_{customer_name}.json"
+                    uid = customer["uid"]
+                    state_file = Path(__file__).parent / f"state_{uid}.json"
 
                     bot_state = _read_bot_state(state_file)
 
@@ -276,10 +293,14 @@ if __name__ == "__main__":
                         print(f"⏭️  Extension already running for '{customer_name}' — skipping.")
                         continue
 
+                    if bot_state.get("pending"):
+                        print(f"⚠️ Overwriting unhandled pending trigger for '{customer_name}' with newer sniper slot.")
+
                     # Extension is idle — write slot data + set pending=True
                     bot_state.update({
                         "extension_running": False,
                         "pending": True,
+                        "trigger_timestamp": time.time(),
                         "action_type": "SNIPER",
                         "ofcCities": customer["ofc_cities"],
                         "ofcPriorityCity": matched_ofc_city,
@@ -290,6 +311,7 @@ if __name__ == "__main__":
                         "consularStartDate": customer["consular_start"].strftime("%Y-%m-%d"),
                         "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
                         "customer_name": customer_name,
+                        "prevent_immediate": customer.get("prevent_immediate", False),
                     })
                     _write_bot_state(state_file, bot_state)
                     print(f"✅ Trigger queued for '{customer_name}' — booking runner will pick it up.")

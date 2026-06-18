@@ -5,7 +5,7 @@ URL = "https://app.checkvisaslots.com/slots/v3"
 HEADERS = {
     "accept": "*/*",
     "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
-    "extversion": "4.7.0.2",
+    "extversion": "4.7.2",
     "origin": "chrome-extension://beepaenfejnphdgnkmccjcfiieihhogl",
     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
     "x-api-key": "9EHYC6",

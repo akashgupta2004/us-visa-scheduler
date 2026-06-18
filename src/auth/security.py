@@ -7,17 +7,17 @@ from src.auth.utils import human_delay, human_click
 
 ACCOUNTS_FILE = Path(__file__).parent.parent.parent / "accounts.json"
 
-def load_security_answers(customer: str, log: logging.Logger) -> dict:
+def load_security_answers(username: str, log: logging.Logger) -> dict:
     if not ACCOUNTS_FILE.exists():
         return {}
     try:
         with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
             accounts = json.load(f)
         for acc in accounts:
-            if acc.get("customer_name") == customer:
+            if acc.get("username") == username:
                 return acc.get("security_questions", {})
     except Exception as e:
-        log.error(f"Failed to load security questions for {customer}: {e}")
+        log.error(f"Failed to load security questions for username '{username}': {e}")
     return {}
 
 
@@ -26,30 +26,15 @@ def match_answer(question_text: str, answers: dict) -> str | None:
     return next((v for k, v in answers.items() if k.lower() in q), None)
 
 
-async def handle_security_question(page: Page, customer: str, log: logging.Logger) -> bool:
+async def handle_security_question(page: Page, username: str, log: logging.Logger) -> bool:
     await human_delay(1000, 2000)
 
-    q_selectors = [
-        "label[for*='SecurityAnswer' i]", "label[for*='security' i]",
-        ".security-question", ".question-text", "#securityQuestion", "legend",
-        "p:has-text('favourite')", "p:has-text('favorite')",
-        "p:has-text('maiden')",    "p:has-text('born')",
-        "p:has-text('pet')",       "p:has-text('school')",
-        "span:has-text('favourite')", "div.question",
-    ]
+    log.info("Waiting for security question inputs (up to 15s) …")
 
-    log.info("Waiting for security question to appear (up to 15s) …")
-    try:
-        combined_q = ", ".join(q_selectors)
-        await page.wait_for_selector(combined_q, state="visible", timeout=15000)
-    except Exception:
-        pass
-
-    answers = load_security_answers(customer, log)
+    answers = load_security_answers(username, log)
     filled_any = False
     
     try:
-        log.info("Waiting for security question inputs (up to 15s) …")
         await page.wait_for_selector("input:not([type='hidden']):not([type='submit']):not([type='button']):not([readonly]):not([disabled])", state="visible", timeout=15000)
     except Exception:
         pass

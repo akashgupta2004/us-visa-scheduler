@@ -6,6 +6,7 @@ import threading
 import tkinter as tk
 import re
 import shutil
+import time
 from datetime import datetime, timedelta
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
@@ -15,6 +16,10 @@ from tkcalendar import DateEntry
 BASE_DIR = Path(__file__).parent
 ACCOUNTS_FILE = BASE_DIR / "accounts.json"
 ORCHESTRATOR_SCRIPT = BASE_DIR / "src" / "orchestrator.py"
+
+def safe_id(username: str) -> str:
+    """Generate a filesystem-safe unique identifier from a username/email."""
+    return re.sub(r'[^a-zA-Z0-9]', '_', str(username))
 
 CITY_OPTIONS = ["CHENNAI", "MUMBAI", "HYDERABAD", "DELHI", "KOLKATA"]
 
@@ -775,30 +780,36 @@ class App(tk.Tk):
             ttk.Label(self.bots_inner_frame, text="No bots are running.", foreground="#94a3b8").pack(pady=5, anchor=tk.W)
             return
 
-        customers = [a.get("customer_name") for a in self.accounts if a.get("customer_name") and a.get("customer_name") not in self.closed_bots]
-        for cust in customers:
+        active_accounts = [a for a in self.accounts if a.get("username") and a.get("username") not in self.closed_bots]
+        for acc in active_accounts:
+            uname = acc.get("username")
+            cname = acc.get("customer_name") or uname
             row = ttk.Frame(self.bots_inner_frame)
             row.pack(fill=tk.X, pady=2)
             
-            ttk.Label(row, text=f"🤖 {cust}", font=("Segoe UI", 10, "bold"), width=25).pack(side=tk.LEFT, padx=(0, 10))
+            ttk.Label(row, text=f"🤖 {cname}", font=("Segoe UI", 10, "bold"), width=25).pack(side=tk.LEFT, padx=(0, 10))
             
             btn_book = ttk.Button(row, text="⚡ Manual Book", style="Primary.TButton",
-                                  command=lambda c=cust: self._on_manual_book(c))
+                                  command=lambda u=uname: self._on_manual_book(u))
             btn_book.pack(side=tk.LEFT, padx=5)
 
             btn_reschedule = ttk.Button(row, text="📅 Consular Reschedule", style="Primary.TButton",
-                                        command=lambda c=cust: self._on_consular_reschedule(c))
+                                        command=lambda u=uname: self._on_consular_reschedule(u))
             btn_reschedule.pack(side=tk.LEFT, padx=5)
 
             btn_close = ttk.Button(row, text="🛑 Close Bot", style="Danger.TButton",
-                                   command=lambda c=cust: self._on_close_bot(c))
+                                   command=lambda u=uname: self._on_close_bot(u))
             btn_close.pack(side=tk.LEFT, padx=5)
 
-    def _on_close_bot(self, customer):
-        safe_name = customer.replace(" ", "_")
+    def _on_close_bot(self, username):
+        acc = next((a for a in self.accounts if a.get("username") == username), None)
+        if not acc: return
+        
+        uid = safe_id(acc.get("username", ""))
+        customer = acc.get("customer_name") or uid
 
         # ── 1. Signal orchestrator to terminate the Python runners ──────────
-        stop_path = BASE_DIR / "src" / f".stop_{safe_name}"
+        stop_path = BASE_DIR / "src" / f".stop_{uid}"
         try:
             stop_path.touch(exist_ok=True)
             self._log(f"[GUI] 🛑 Stop signal sent for '{customer}'.")
@@ -808,8 +819,12 @@ class App(tk.Tk):
         # ── 2. Kill the Chrome window by CDP port ────────────────────────────
         # Derive the CDP port the same way the orchestrator does (9222 + index)
         try:
-            customer_names = [a.get("customer_name") for a in self.accounts if a.get("customer_name")]
-            idx = customer_names.index(customer) if customer in customer_names else -1
+            # We match idx in the accounts list
+            idx = -1
+            for i, a in enumerate(self.accounts):
+                if a.get("username") == username:
+                    idx = i
+                    break
             if idx >= 0:
                 cdp_port = 9222 + idx
                 import subprocess as _sp
@@ -825,7 +840,7 @@ class App(tk.Tk):
             self._log(f"[GUI] Warning: could not kill Chrome for '{customer}': {e}")
 
         # ── 3. Delete the state file ─────────────────────────────────────────
-        state_path = BASE_DIR / "src" / f"state_{customer}.json"
+        state_path = BASE_DIR / "src" / f"state_{uid}.json"
         try:
             if state_path.exists():
                 state_path.unlink()
@@ -834,18 +849,20 @@ class App(tk.Tk):
             self._log(f"[GUI] Warning: could not delete state file for '{customer}': {e}")
 
         # ── 4. Track as closed and refresh UI ───────────────────────────────
-        self.closed_bots.add(customer)
+        self.closed_bots.add(username)
         self._update_active_bots_list()
 
-    def _on_manual_book(self, customer):
-        if not customer:
+    def _on_manual_book(self, username):
+        if not username:
             return
         
-        acc = next((a for a in self.accounts if a.get("customer_name") == customer), None)
+        acc = next((a for a in self.accounts if a.get("username") == username), None)
         if not acc:
             return
             
-        state_path = BASE_DIR / "src" / f"state_{customer}.json"
+        uid = safe_id(acc.get("username", ""))
+        customer = acc.get("customer_name") or uid
+        state_path = BASE_DIR / "src" / f"state_{uid}.json"
         try:
             # Read existing state to preserve extension_running flag
             existing = {}
@@ -883,15 +900,17 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to write state file: {e}")
 
-    def _on_consular_reschedule(self, customer):
-        if not customer:
+    def _on_consular_reschedule(self, username):
+        if not username:
             return
 
-        acc = next((a for a in self.accounts if a.get("customer_name") == customer), None)
+        acc = next((a for a in self.accounts if a.get("username") == username), None)
         if not acc:
             return
 
-        state_path = BASE_DIR / "src" / f"state_{customer}.json"
+        uid = safe_id(acc.get("username", ""))
+        customer = acc.get("customer_name") or uid
+        state_path = BASE_DIR / "src" / f"state_{uid}.json"
         try:
             existing = {}
             if state_path.exists():

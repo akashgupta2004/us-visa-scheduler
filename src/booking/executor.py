@@ -66,6 +66,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
         "consularPriorityCity": normalize_city(trigger.get("consularPriorityCity", consularCities[0] if consularCities else "")),
         "consularStartDate": trigger.get("consularStartDate", ""),
         "consularEndDate": trigger.get("consularEndDate", ""),
+        "preventImmediateBooking": trigger.get("prevent_immediate", False),
     }
 
     log.info(f"🚀 Triggering extension booking for '{customerName}'")
@@ -161,6 +162,7 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
         "consularPriorityCity": normalize_city(trigger.get("consularPriorityCity", consularCities[0] if consularCities else "")),
         "consularStartDate": trigger.get("consularStartDate", ""),
         "consularEndDate": trigger.get("consularEndDate", ""),
+        "preventImmediateBooking": trigger.get("prevent_immediate", False),
     }
 
     log.info(f"📅 Triggering consular reschedule for '{customerName}'")

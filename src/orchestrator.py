@@ -26,6 +26,7 @@ import sys
 import time
 import threading
 import signal
+import re
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -61,6 +62,11 @@ def log(msg: str) -> None:
     print(f"[{ts}] [ORCHESTRATOR] {msg}", flush=True)
 
 
+def safe_id(username: str) -> str:
+    """Generate a filesystem-safe unique identifier from a username/email."""
+    return re.sub(r'[^a-zA-Z0-9]', '_', str(username))
+
+
 # ─────────────────────────────────────────────────────────────
 # Process launchers
 # ─────────────────────────────────────────────────────────────
@@ -90,11 +96,12 @@ def spawn_login_runner(account: dict, cdp_port: int, profile_dir: str) -> subpro
 
 def spawn_booking_runner(account: dict, cdp_port: int) -> subprocess.Popen:
     """Launch booking_runner.py for a single account once login is done."""
-    customer = account["customer_name"]
+    customer = account.get("customer_name") or account["username"]
     cmd = [
         PYTHON, str(BOT2_SCRIPT),
         "--cdp-port", str(cdp_port),
         "--customer",  customer,
+        "--username",  account["username"]
     ]
     log(f"▶  Starting bot2 for '{customer}' on port {cdp_port}")
     return subprocess.Popen(
@@ -180,6 +187,8 @@ def main() -> None:
 
     accounts = load_accounts()
     log(f"Loaded {len(accounts)} account(s) from accounts.json")
+    if args.max_fetches is not None:
+        log(f"API fetch limit set to: {args.max_fetches}")
 
     all_procs: list[subprocess.Popen] = []
 
@@ -211,8 +220,9 @@ def main() -> None:
 
     for idx, account in enumerate(accounts):
         cdp_port    = BASE_CDP_PORT + idx
-        customer    = account["customer_name"]
-        profile_dir = str(Path(__file__).parent.parent / f"chrome_profile_{customer}")
+        customer    = account.get("customer_name") or account["username"]
+        uid         = safe_id(account["username"])
+        profile_dir = str(Path(__file__).parent.parent / f"chrome_profile_{uid}")
 
         login_proc = spawn_login_runner(account, cdp_port, profile_dir)
         all_procs.append(login_proc)

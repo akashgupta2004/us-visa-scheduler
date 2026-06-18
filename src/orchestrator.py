@@ -166,7 +166,11 @@ def relay_output(proc: subprocess.Popen, label: str, ready_event: threading.Even
     try:
         for line in proc.stdout:
             line = line.rstrip()
-            print(f"[{label}] {line}", flush=True)
+            if label == "monitor":
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+                print(f"[monitor] {ts} {line}", flush=True)
+            else:
+                print(f"[{label}] {line}", flush=True)
             if ready_event and "[READY]" in line:
                 ready_event.set()
     except Exception:

@@ -195,14 +195,22 @@ async def run(cdp_port: int, customer: str, username: str):
         browser, context, page = await connect_to_chrome(pw, cdp_port, log, handle_dialogs=True)
 
         # Inject listener for extension's session expiry broadcast
-        await page.add_init_script("""
-            window.addEventListener("message", (event) => {
-                if (event.source !== window || !event.data.action) return;
-                if (event.data.action === "SESSION_EXPIRED") {
-                    window._extensionSessionExpired = true; 
-                }
-            });
-        """)
+        listener_script = """
+            if (!window.__sniperExpiryListenerAdded) {
+                window.__sniperExpiryListenerAdded = true;
+                window.addEventListener("message", (event) => {
+                    if (event.source !== window || !event.data || !event.data.action) return;
+                    if (event.data.action === "SESSION_EXPIRED") {
+                        window._extensionSessionExpired = true; 
+                    }
+                });
+            }
+        """
+        await page.add_init_script(listener_script)
+        try:
+            await page.evaluate(listener_script)
+        except Exception as e:
+            log.warning(f"Could not instantly bind expiry listener: {e}")
 
         log.info("Waiting for portal …")
         if not await ensure_on_portal(page, log):

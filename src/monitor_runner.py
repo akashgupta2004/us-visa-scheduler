@@ -146,7 +146,12 @@ if __name__ == "__main__":
 
     while True:
         if max_fetches is not None and fetches_count >= max_fetches:
-            print(f"🛑 Reached maximum limit of {max_fetches} API fetches. Monitor stopping.")
+            msg = f"🛑 Reached maximum limit of {max_fetches} API fetches. Monitor stopping."
+            print(msg)
+            try:
+                send_slack_error(f"🛑 *Monitor Stopped*: Reached maximum limit of `{max_fetches}` API fetches. The bot is now idle and no longer checking for slots.")
+            except Exception as e:
+                print(f"Failed to send slack alert: {e}")
             break
 
         try:

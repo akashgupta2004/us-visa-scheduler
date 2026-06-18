@@ -1,4 +1,10 @@
-import requests
+try:
+    from curl_cffi import requests
+    HAS_CURL_CFFI = True
+except ImportError:
+    import requests
+    HAS_CURL_CFFI = False
+    
 from typing import List, Dict
 
 URL = "https://app.checkvisaslots.com/slots/v3"
@@ -14,7 +20,11 @@ REQUEST_TIMEOUT = 15
 
 def fetch_rows() -> List[Dict]:
     try:
-        response = requests.get(URL, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        if HAS_CURL_CFFI:
+            # impersonate="chrome110" helps bypass AWS WAF challenges (HTTP 202)
+            response = requests.get(URL, headers=HEADERS, timeout=REQUEST_TIMEOUT, impersonate="chrome110")
+        else:
+            response = requests.get(URL, headers=HEADERS, timeout=REQUEST_TIMEOUT)
 
         if response.status_code != 200:
             print(f"⚠️ HTTP {response.status_code} Response:")

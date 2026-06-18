@@ -19,6 +19,12 @@ async def wait_for_waiting_room(page: Page, log: logging.Logger, timeout_minutes
             continue
             
         html_lower = html.lower()
+        
+        # Fast-fail for Cloudflare hard blocks
+        if "sorry, you have been blocked" in html_lower or "unable to access usvisascheduling.com" in html_lower:
+            log.error("🛑 Cloudflare WAF Block detected ('Sorry, you have been blocked'). Aborting waiting room!")
+            raise Exception("Cloudflare WAF Hard Block")
+            
         if any(kw in html_lower for kw in ["schedule appointment", "reschedule appointment", "cancel appointment"]):
             log.info("Dashboard keywords detected (e.g. Schedule Appointment). We are already logged in!")
             return

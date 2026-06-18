@@ -325,10 +325,16 @@ if __name__ == "__main__":
             save_state(state)
         except Exception as e:
             print(f"❌ Error: {e}")
-            try:
-                send_slack_error(f"Error in slot monitor: {e}")
-            except Exception as slack_e:
-                print(f"❌ Failed to send Slack error notification: {slack_e}")
+            last_err_time = state.get("last_slack_error_time", 0)
+            if time.time() - last_err_time > ALERT_COOLDOWN_SECONDS:
+                try:
+                    send_slack_error(f"Error in slot monitor: {e}")
+                    state["last_slack_error_time"] = time.time()
+                    save_state(state)
+                except Exception as slack_e:
+                    print(f"❌ Failed to send Slack error notification: {slack_e}")
+            else:
+                print("⏳ Slack error skipped (cooldown active).")
             time.sleep(ERROR_BACKOFF_SECONDS)
             continue
 

@@ -107,12 +107,26 @@ async def recover_session(page, customer: str, username: str):
     if not fastcaptcha:
         log.warning("FASTCAPTCHA_API_KEY missing for recovery. Captchas will fail.")
         
-    # 2. Navigate home
-    log.info("Navigating to home page to trigger login redirect...")
+    # 2. Trigger redirect by clicking or navigating
     try:
-        await page.goto("https://www.usvisascheduling.com/en-US/", wait_until="domcontentloaded", timeout=60000)
+        cur_url = page.url.lower()
+        if "/ofc-schedule" in cur_url or "/schedule" in cur_url:
+            log.info("Currently on schedule page, navigating to dashboard to trigger recovery...")
+            await page.goto("https://www.usvisascheduling.com/en-US/", wait_until="domcontentloaded", timeout=30000)
+            
+        elif "usvisascheduling.com/en-us" in cur_url and not any(k in cur_url for k in ["b2clogin", "login"]):
+            log.info("On dashboard. Clicking Schedule/Reschedule button to trigger session validation...")
+            # Look for common CTA links
+            btn = await page.query_selector("a:has-text('Schedule Appointment'), a:has-text('Reschedule Appointment')")
+            if btn:
+                await btn.click()
+                # Wait for any immediate redirects
+                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+            else:
+                log.warning("Could not find Schedule button. Attempting manual navigation...")
+                await page.goto("https://www.usvisascheduling.com/en-US/schedule/", wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
-        log.error(f"Failed to navigate home: {e}")
+        log.error(f"Failed during navigation trigger: {e}")
     
     # 3. Handle waiting room
     try:

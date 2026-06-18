@@ -60,9 +60,9 @@ def _get_args() -> argparse.Namespace:
     if _ARGS is not None:
         return _ARGS
     parser = argparse.ArgumentParser(description="Visa Scheduling Bot - Login Runner")
-    parser.add_argument("--username",    default=os.getenv("VISA_USERNAME", ""),
-                        help="Visa portal username (default: VISA_USERNAME env var)")
-    parser.add_argument("--password",    default=os.getenv("VISA_PASSWORD", ""),
+    parser.add_argument("--username",    default="",
+                        help="Username for the portal")
+    parser.add_argument("--password",    default="",
                         help="Visa portal password (default: VISA_PASSWORD env var)")
     parser.add_argument("--cdp-port",   type=int, default=9222,
                         help="Chrome remote-debugging port (default: 9222)")

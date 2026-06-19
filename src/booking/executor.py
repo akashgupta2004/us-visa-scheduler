@@ -2,8 +2,32 @@ import time
 import json
 import logging
 import asyncio
+import sys
+from pathlib import Path
 from datetime import datetime
 from playwright.async_api import Page
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from slack import send as send_slack
+
+
+async def check_for_page_limit(page: Page, customerName: str, log: logging.Logger) -> bool:
+    """Check if the page view limit error is present on the page."""
+    try:
+        url = page.url.lower()
+        if "/ofc-schedule" not in url and "/schedule" not in url:
+            return False
+
+        limit_hit = await page.evaluate("() => document.body && document.body.innerText.includes('exceeded the limit for viewing this page')")
+        if limit_hit:
+            msg = f"❌ *Page View Limit Exceeded*: `{customerName}` has exceeded the daily limit for viewing the schedule page. Please wait 24 hours before trying again."
+            log.error(msg)
+            send_slack(msg)
+            return True
+    except Exception:
+        pass
+    return False
+
 
 # Default city — used only for display purposes.
 DEFAULT_OFC_CITY = "HYDERABAD"
@@ -97,6 +121,9 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
 
     deadline = time.time() + 120
     while time.time() < deadline:
+        if await check_for_page_limit(page, customerName, log):
+            return False
+
         try:
             result = await page.evaluate("window.__sniperResult")
         except Exception as e:
@@ -192,6 +219,9 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
 
     deadline = time.time() + 120
     while time.time() < deadline:
+        if await check_for_page_limit(page, customerName, log):
+            return False
+
         try:
             result = await page.evaluate("window.__rescheduleResult")
         except Exception as e:

@@ -729,7 +729,7 @@ class App(tk.Tk):
             env["PYTHONPATH"] = str(BASE_DIR)
 
         self.orchestrator_proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", 
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.PIPE, text=True, encoding="utf-8", 
             bufsize=1, cwd=str(BASE_DIR), env=env
         )
 
@@ -780,7 +780,7 @@ class App(tk.Tk):
             ttk.Label(self.bots_inner_frame, text="No bots are running.", foreground="#94a3b8").pack(pady=5, anchor=tk.W)
             return
 
-        active_accounts = [a for a in self.accounts if a.get("username") and a.get("username") not in self.closed_bots]
+        active_accounts = [a for a in self.accounts if a.get("username")]
         for acc in active_accounts:
             uname = acc.get("username")
             cname = acc.get("customer_name") or uname
@@ -789,164 +789,128 @@ class App(tk.Tk):
             
             ttk.Label(row, text=f"🤖 {cname}", font=("Segoe UI", 10, "bold"), width=25).pack(side=tk.LEFT, padx=(0, 10))
             
-            btn_book = ttk.Button(row, text="⚡ Manual Book", style="Primary.TButton",
-                                  command=lambda u=uname: self._on_manual_book(u))
-            btn_book.pack(side=tk.LEFT, padx=5)
+            if uname in self.closed_bots:
+                ttk.Label(row, text="(Stopped)", foreground="#94a3b8").pack(side=tk.LEFT, padx=10)
+                btn_start_bot = ttk.Button(row, text="▶ Start Bot", style="Success.TButton",
+                                       command=lambda u=uname: self._on_start_bot(u))
+                btn_start_bot.pack(side=tk.RIGHT, padx=5)
+            else:
+                action_mode = acc.get("action_mode", "SNIPER")
+                if action_mode == "SNIPER":
+                    btn_book = ttk.Button(row, text="⚡ Manual Book", style="Primary.TButton",
+                                          command=lambda u=uname: self._on_manual_book(u))
+                    btn_book.pack(side=tk.LEFT, padx=5)
+                elif action_mode == "RESCHEDULE_CONSULAR":
+                    btn_reschedule = ttk.Button(row, text="📅 Consular Reschedule", style="Primary.TButton",
+                                                command=lambda u=uname: self._on_consular_reschedule(u))
+                    btn_reschedule.pack(side=tk.LEFT, padx=5)
 
-            btn_reschedule = ttk.Button(row, text="📅 Consular Reschedule", style="Primary.TButton",
-                                        command=lambda u=uname: self._on_consular_reschedule(u))
-            btn_reschedule.pack(side=tk.LEFT, padx=5)
+                btn_close = ttk.Button(row, text="🛑 Close Bot", style="Danger.TButton",
+                                       command=lambda u=uname: self._on_close_bot(u))
+                btn_close.pack(side=tk.LEFT, padx=5)
 
-            btn_close = ttk.Button(row, text="🛑 Close Bot", style="Danger.TButton",
-                                   command=lambda u=uname: self._on_close_bot(u))
-            btn_close.pack(side=tk.LEFT, padx=5)
-
-    def _on_close_bot(self, username):
+    def _get_account_info(self, username):
+        if not username: return None, None, None
         acc = next((a for a in self.accounts if a.get("username") == username), None)
-        if not acc: return
-        
+        if not acc: return None, None, None
         uid = safe_id(acc.get("username", ""))
         customer = acc.get("customer_name") or uid
+        return acc, uid, customer
 
-        # ── 1. Signal orchestrator to terminate the Python runners ──────────
-        stop_path = BASE_DIR / "src" / f".stop_{uid}"
-        try:
-            stop_path.touch(exist_ok=True)
-            self._log(f"[GUI] 🛑 Stop signal sent for '{customer}'.")
-        except Exception as e:
-            self._log(f"[GUI] Warning: could not write stop file for '{customer}': {e}")
-
-        # ── 2. Kill the Chrome window by CDP port ────────────────────────────
-        # Derive the CDP port the same way the orchestrator does (9222 + index)
-        try:
-            # We match idx in the accounts list
-            idx = -1
-            for i, a in enumerate(self.accounts):
-                if a.get("username") == username:
-                    idx = i
-                    break
-            if idx >= 0:
-                cdp_port = 9222 + idx
-                import subprocess as _sp
-                result = _sp.run(
-                    ["taskkill", "/F", "/FI", f"COMMANDLINE like *--remote-debugging-port={cdp_port}*"],
-                    capture_output=True, text=True
-                )
-                if "SUCCESS" in result.stdout:
-                    self._log(f"[GUI] 🖥️ Chrome window closed for '{customer}' (port {cdp_port}).")
-                else:
-                    self._log(f"[GUI] Chrome kill attempt for port {cdp_port}: {result.stdout.strip() or result.stderr.strip()}")
-        except Exception as e:
-            self._log(f"[GUI] Warning: could not kill Chrome for '{customer}': {e}")
-
-        # ── 3. Delete the state file ─────────────────────────────────────────
+    def _trigger_booking_action(self, username, action_type):
+        acc, uid, customer = self._get_account_info(username)
+        if not acc: return
+        
         state_path = BASE_DIR / "src" / f"state_{uid}.json"
         try:
+            existing = {}
             if state_path.exists():
-                state_path.unlink()
-                self._log(f"[GUI] 🗑️ Deleted state file for '{customer}'.")
-        except Exception as e:
-            self._log(f"[GUI] Warning: could not delete state file for '{customer}': {e}")
+                try:
+                    existing = json.loads(state_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
 
-        # ── 4. Track as closed and refresh UI ───────────────────────────────
+            if existing.get("extension_running"):
+                force = messagebox.askyesno(
+                    "Already Running?",
+                    f"The booking runner for '{customer}' reports it is already executing.\n\n"
+                    f"This may be stale. Do you want to force a {action_type} anyway?"
+                )
+                if not force:
+                    return
+
+            existing.update({
+                "extension_running": False,
+                "pending": True,
+                "action_type": action_type,
+                "customer_name": customer,
+            })
+            
+            # Action specific data
+            if action_type == "SNIPER":
+                existing.update({
+                    "ofcCities": acc.get("ofcCities", []),
+                    "ofcStartDate": acc.get("ofcStartDate", ""),
+                    "ofcEndDate": acc.get("ofcEndDate", ""),
+                    "consularCities": acc.get("consularCities", []),
+                    "consularStartDate": acc.get("consularStartDate", ""),
+                    "consularEndDate": acc.get("consularEndDate", ""),
+                })
+            else:
+                existing.update({
+                    "consularCities": acc.get("consularCities", []),
+                    "consularStartDate": acc.get("consularStartDate", ""),
+                    "consularEndDate": acc.get("consularEndDate", ""),
+                })
+                
+            state_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            self._log(f"[GUI] ⚡ {action_type} trigger queued for '{customer}'.")
+            messagebox.showinfo("Triggered", f"{action_type} queued for '{customer}'.\nBooking runner will pick it up within 0.5s.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to write state file: {e}")
+
+    def _on_close_bot(self, username):
+        acc, uid, customer = self._get_account_info(username)
+        if not acc: return
+
+        if self.orchestrator_proc and self.orchestrator_proc.stdin:
+            try:
+                self.orchestrator_proc.stdin.write(f"STOP:{uid}\n")
+                self.orchestrator_proc.stdin.flush()
+                self._log(f"[GUI] 🛑 Stop signal sent for '{customer}'.")
+            except Exception as e:
+                self._log(f"[GUI] Warning: could not send stop signal for '{customer}': {e}")
+
         self.closed_bots.add(username)
         self._update_active_bots_list()
 
+    def _on_start_bot(self, username):
+        acc, uid, customer = self._get_account_info(username)
+        if not acc: return
+
+        if self.orchestrator_proc and self.orchestrator_proc.stdin:
+            try:
+                self.orchestrator_proc.stdin.write(f"START:{uid}\n")
+                self.orchestrator_proc.stdin.flush()
+                self._log(f"[GUI] ▶️ Start signal sent for '{customer}'.")
+            except Exception as e:
+                self._log(f"[GUI] Warning: could not send start signal for '{customer}': {e}")
+
+        if username in self.closed_bots:
+            self.closed_bots.remove(username)
+        self._update_active_bots_list()
+
     def _on_manual_book(self, username):
-        if not username:
-            return
-        
-        acc = next((a for a in self.accounts if a.get("username") == username), None)
-        if not acc:
-            return
-            
-        uid = safe_id(acc.get("username", ""))
-        customer = acc.get("customer_name") or uid
-        state_path = BASE_DIR / "src" / f"state_{uid}.json"
-        try:
-            # Read existing state to preserve extension_running flag
-            existing = {}
-            if state_path.exists():
-                try:
-                    existing = json.loads(state_path.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-            # If extension_running is stuck True, ask user if they want to force it.
-            if existing.get("extension_running"):
-                force = messagebox.askyesno(
-                    "Already Running?",
-                    f"The booking runner for '{customer}' reports it is already executing.\n\n"
-                    "This may be stale. Do you want to force a new booking trigger anyway?"
-                )
-                if not force:
-                    return
-
-            existing.update({
-                "extension_running": False,
-                "pending": True,
-                "action_type": "SNIPER",
-                "ofcCities": acc.get("ofcCities", []),
-                "ofcStartDate": acc.get("ofcStartDate", ""),
-                "ofcEndDate": acc.get("ofcEndDate", ""),
-                "consularCities": acc.get("consularCities", []),
-                "consularStartDate": acc.get("consularStartDate", ""),
-                "consularEndDate": acc.get("consularEndDate", ""),
-                "customer_name": customer,
-            })
-            state_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-            self._log(f"[GUI] ⚡ Manual trigger queued for '{customer}'.")
-            messagebox.showinfo("Triggered", f"Trigger queued for '{customer}'.\nBooking runner will pick it up within 0.5s.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to write state file: {e}")
+        self._trigger_booking_action(username, "SNIPER")
 
     def _on_consular_reschedule(self, username):
-        if not username:
-            return
-
-        acc = next((a for a in self.accounts if a.get("username") == username), None)
-        if not acc:
-            return
-
-        uid = safe_id(acc.get("username", ""))
-        customer = acc.get("customer_name") or uid
-        state_path = BASE_DIR / "src" / f"state_{uid}.json"
-        try:
-            existing = {}
-            if state_path.exists():
-                try:
-                    existing = json.loads(state_path.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-            if existing.get("extension_running"):
-                force = messagebox.askyesno(
-                    "Already Running?",
-                    f"The booking runner for '{customer}' reports it is already executing.\n\n"
-                    "This may be stale. Do you want to force a consular reschedule anyway?"
-                )
-                if not force:
-                    return
-
-            existing.update({
-                "extension_running": False,
-                "pending": True,
-                "action_type": "RESCHEDULE_CONSULAR",
-                "consularCities": acc.get("consularCities", []),
-                "consularStartDate": acc.get("consularStartDate", ""),
-                "consularEndDate": acc.get("consularEndDate", ""),
-                "customer_name": customer,
-            })
-            state_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-            self._log(f"[GUI] 📅 Consular reschedule trigger queued for '{customer}'.")
-            messagebox.showinfo("Triggered", f"Consular reschedule queued for '{customer}'.\nBooking runner will pick it up within 0.5s.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to write state file: {e}")
+        self._trigger_booking_action(username, "RESCHEDULE_CONSULAR")
 
     def destroy(self):
         if self.orchestrator_proc:
             try:
-                self.orchestrator_proc.terminate()
+                import subprocess
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.orchestrator_proc.pid)], capture_output=True)
             except:
                 pass
         super().destroy()

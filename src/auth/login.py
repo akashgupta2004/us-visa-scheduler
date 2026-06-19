@@ -26,7 +26,7 @@ async def wait_for_waiting_room(page: Page, log: logging.Logger, timeout_minutes
             raise Exception("Cloudflare WAF Hard Block")
             
         if any(kw in html_lower for kw in ["schedule appointment", "reschedule appointment", "cancel appointment"]):
-            log.info("Dashboard keywords detected (e.g. Schedule Appointment). We are already logged in!")
+            log.info("Home page keywords detected (e.g. Schedule Appointment). We are already logged in!")
             return
         
         title_lower = title.lower()

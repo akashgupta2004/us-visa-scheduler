@@ -156,7 +156,7 @@ async def run() -> None:
                         
                     # Check if we bypassed login entirely (already logged in)
                     if _is_portal_url(cur_url):
-                        log.info("Already logged in! Reached dashboard directly.")
+                        log.info("Already logged in! Reached home page directly.")
                         already_logged_in = True
                         break
                         

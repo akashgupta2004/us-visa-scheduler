@@ -31,7 +31,7 @@ ACCOUNTS_FILE = Path(__file__).parent.parent / "accounts.json"
 STATE_FILE = Path(__file__).parent.parent / "slot_alert_state.json"
 
 ALERT_COOLDOWN_SECONDS = 15 * 60
-ERROR_BACKOFF_SECONDS = 25
+ERROR_BACKOFF_SECONDS = 40
 
 POLL_MIN_SECONDS = 15
 POLL_MAX_SECONDS = 20

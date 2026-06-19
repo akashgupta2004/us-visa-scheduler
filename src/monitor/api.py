@@ -57,13 +57,7 @@ def fetch_rows() -> List[Dict]:
             if time.time() - _last_quota_alert > 900: # 15 minutes cooldown
                 msg = f"⚠️ CheckVisaSlots Quota Low! (Only {remaining_fetches} API fetches remaining on this key)"
                 print(msg)
-                if send_slack_error:
-                    try:
-                        send_slack_error(msg)
-                        _last_quota_alert = time.time()
-                    except Exception as e:
-                        print(f"Failed to send low quota slack alert: {e}")
-        
+                _last_quota_alert = time.time()
         slot_details = data.get("slotDetails", [])
         if not slot_details:
             print(f"⚠️ API returned 200 OK but no slotDetails found.")

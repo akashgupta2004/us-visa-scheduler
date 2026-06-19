@@ -107,30 +107,16 @@ async def recover_session(page, customer: str, username: str):
     if not fastcaptcha:
         log.warning("FASTCAPTCHA_API_KEY missing for recovery. Captchas will fail.")
         
-    # 2. Trigger redirect by clicking or navigating
+    # 2. Trigger redirect by simply reloading the page
     try:
-        cur_url = page.url.lower()
-        if "/ofc-schedule" in cur_url or "/schedule" in cur_url:
-            log.info("Currently on schedule page, navigating to dashboard to trigger recovery...")
-            await page.goto("https://www.usvisascheduling.com/en-US/", wait_until="domcontentloaded", timeout=30000)
-            
-        elif "usvisascheduling.com/en-us" in cur_url and not any(k in cur_url for k in ["b2clogin", "login"]):
-            log.info("On dashboard. Clicking Schedule/Reschedule button to trigger session validation...")
-            # Look for common CTA links
-            btn = await page.query_selector("a:has-text('Schedule Appointment'), a:has-text('Reschedule Appointment')")
-            if btn:
-                await btn.click()
-                # Wait for any immediate redirects
-                await page.wait_for_load_state("domcontentloaded", timeout=15000)
-            else:
-                log.warning("Could not find Schedule button. Attempting manual navigation...")
-                await page.goto("https://www.usvisascheduling.com/en-US/schedule/", wait_until="domcontentloaded", timeout=30000)
+        log.info("Reloading the page to trigger session validation...")
+        await page.reload(wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
-        log.error(f"Failed during navigation trigger: {e}")
+        log.error(f"Failed during page reload: {e}")
     
     # 3. Handle waiting room
     try:
-        await wait_for_waiting_room(page, log, timeout_minutes=15)
+        await wait_for_waiting_room(page, log, timeout_minutes=120)
     except Exception as e:
         log.error(f"Error waiting for waiting room during recovery: {e}")
         return False
@@ -139,9 +125,9 @@ async def recover_session(page, customer: str, username: str):
     cur_url = page.url.lower()
     if not any(k in cur_url for k in ["b2clogin", "logon", "login", "signin", "sign-in"]):
         if "usvisascheduling.com" in cur_url and any(k in cur_url for k in ["/schedule", "/en-us"]):
-            log.info("Already on dashboard? Recovery maybe not needed.")
+            log.info("Already on home or schedule/reschedule page? Recovery maybe not needed.")
             return True
-        log.error("Did not reach login page or dashboard during recovery.")
+        log.error("Did not reach login page or home page during recovery.")
         return False
         
     # 5. Perform Login
@@ -176,7 +162,7 @@ async def recover_session(page, customer: str, username: str):
         
     # Wait for waiting room one more time in case it pops up after redirect
     try:
-        await wait_for_waiting_room(page, log, timeout_minutes=10)
+        await wait_for_waiting_room(page, log, timeout_minutes=120)
     except Exception as e:
         log.error(f"Error checking waiting room after security questions: {e}")
         
@@ -207,6 +193,27 @@ async def run(cdp_port: int, customer: str, username: str):
 
     async with async_playwright() as pw:
         browser, context, page = await connect_to_chrome(pw, cdp_port, log, handle_dialogs=True)
+
+        from datetime import datetime
+        def handle_console(msg):
+            text = msg.text
+            is_match = "Sniper" in text or "Consular" in text or "OFC" in text or "Booking" in text
+            is_err = msg.type == "error" and "usvisascheduling.com" in text
+            
+            if is_match or is_err:
+                log_file = Path("logs/extension.log")
+                log_file.parent.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(log_file, "a", encoding="utf-8") as f:
+                    if msg.type == "error":
+                        prefix = "[ERROR]"
+                    elif msg.type == "warning":
+                        prefix = "[WARN]"
+                    else:
+                        prefix = "[INFO]"
+                    f.write(f"[{timestamp}] {prefix} [{customer}] {text}\n")
+
+        page.on("console", handle_console)
 
         # Inject listener for extension's session expiry broadcast
         listener_script = """
@@ -287,7 +294,7 @@ async def run(cdp_port: int, customer: str, username: str):
                         title = (await page.title()).lower()
                         if "waiting room" in title or "moment" in title or "verify you are human" in title or "attention required" in title:
                             log.warning("⚠️ Cloudflare waiting room / captcha detected before trigger! Resolving...")
-                            await wait_for_waiting_room(page, log, timeout_minutes=15)
+                            await wait_for_waiting_room(page, log, timeout_minutes=120)
                     except Exception as e:
                         log.error(f"Error checking Cloudflare before trigger: {e}")
 
@@ -311,7 +318,7 @@ async def run(cdp_port: int, customer: str, username: str):
                         if "Session expired" in str(e):
                             log.error("Session expired during action. Triggering recovery...")
                             # Trigger recovery
-                            await recover_session(page, customer)
+                            await recover_session(page, customer, username)
 
                     if success:
                         log.info("=" * 60)

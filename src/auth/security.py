@@ -4,8 +4,7 @@ import logging
 from pathlib import Path
 from playwright.async_api import Page
 from src.auth.utils import human_delay, human_click
-
-ACCOUNTS_FILE = Path(__file__).parent.parent.parent / "accounts.json"
+from src.common.config import ACCOUNTS_FILE
 
 def load_security_answers(username: str, log: logging.Logger) -> dict:
     if not ACCOUNTS_FILE.exists():

@@ -3,17 +3,21 @@ slack.py — Send a message to the VisaBot Slack channel.
 
 Usage:
     python slack.py "Your message here"
-    python slack.py  (opens interactive prompt).check 
+    python slack.py  (opens interactive prompt)
 """
 
+import os
 import sys
 import requests
 
 # Force UTF-8 output so emojis don't crash on Windows when piped
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
-
-SLACK_WEBHOOK = "https://hooks.slack.com/services/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"
+# Load webhook URL from environment variable, with hardcoded fallback for backward compatibility
+SLACK_WEBHOOK = os.environ.get(
+    "SLACK_WEBHOOK_URL",
+    "https://hooks.slack.com/services/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"
+)
 
 
 def send(message: str, emoji: str = "💬") -> bool:

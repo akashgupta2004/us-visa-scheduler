@@ -27,15 +27,20 @@ import time
 import threading
 from datetime import datetime
 import signal
-import re
 from pathlib import Path
 import queue
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Ensure project root is on the path for top-level imports (slack.py)
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from slack import send as slack_send
+from src.common.utils import safe_id
+from src.common.config import load_accounts as _load_accounts, ACCOUNTS_FILE
+from src.common.state import update_state as _update_bot_state, get_state_file as _get_state_file
 
 # ─────────────────────────────────────────────────────────────
-ACCOUNTS_FILE   = Path(__file__).parent.parent / "accounts.json"
 BOT_SCRIPT      = Path(__file__).parent / "login_runner.py"
 BOT2_SCRIPT     = Path(__file__).parent / "booking_runner.py"
 MONITOR_SCRIPT  = Path(__file__).parent / "monitor_runner.py"
@@ -48,25 +53,13 @@ PYTHON          = sys.executable
 # ─────────────────────────────────────────────────────────────
 
 def load_accounts() -> list[dict]:
-    if not ACCOUNTS_FILE.exists():
-        print(f"[ORCHESTRATOR] ❌  accounts.json not found at {ACCOUNTS_FILE}")
-        sys.exit(1)
-    with ACCOUNTS_FILE.open(encoding="utf-8") as f:
-        accounts = json.load(f)
-    if not isinstance(accounts, list) or not accounts:
-        print("[ORCHESTRATOR] ❌  accounts.json must be a non-empty JSON array.")
-        sys.exit(1)
-    return accounts
+    """Load accounts using the shared config loader."""
+    return _load_accounts()
 
 
 def log(msg: str) -> None:
     ts = time.strftime("%H:%M:%S")
     print(f"[{ts}] [ORCHESTRATOR] {msg}", flush=True)
-
-
-def safe_id(username: str) -> str:
-    """Generate a filesystem-safe unique identifier from a username/email."""
-    return re.sub(r'[^a-zA-Z0-9]', '_', str(username))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -205,6 +198,7 @@ def main() -> None:
         log(f"API fetch limit set to: {args.max_fetches}")
 
     all_procs: list[subprocess.Popen] = []
+    procs_lock = threading.Lock()
 
     def shutdown(signum=None, frame=None):
         log("Shutting down all child processes …")
@@ -233,15 +227,19 @@ def main() -> None:
     sessions: list[dict] = []
 
     # ── Wait for each bot to log in, then start bot2 ──────────
-    def wait_and_spawn_booking_runner(session: dict) -> None:
+    def wait_and_spawn_booking_runner(session: dict, expected_event: threading.Event, expected_proc) -> None:
         customer = session["account"]["customer_name"]
         log(f"⏳  Waiting for '{customer}' login to complete …")
         # Wait up to 10 minutes for login
-        if session["ready_event"].wait(timeout=600):
+        if expected_event.wait(timeout=600):
+            if session.get("ready_event") is not expected_event or session.get("login_proc") is not expected_proc:
+                return # Phantom thread from an older run
+
             log(f"✅  '{customer}' is logged in — starting bot2")
             booking_proc = spawn_booking_runner(session["account"], session["cdp_port"])
             session["booking_proc"] = booking_proc
-            all_procs.append(booking_proc)
+            with procs_lock:
+                all_procs.append(booking_proc)
             relay_thread = threading.Thread(
                 target=relay_output,
                 args=(booking_proc, f"booking:{customer}"),
@@ -249,6 +247,8 @@ def main() -> None:
             )
             relay_thread.start()
         else:
+            if session.get("ready_event") is not expected_event or session.get("login_proc") is not expected_proc:
+                return # Phantom thread from an older run
             log(f"⚠️  '{customer}' did not log in within 10 minutes — skipping bot2")
 
     def start_bot_session(sess_dict: dict) -> None:
@@ -257,7 +257,8 @@ def main() -> None:
         p_dir = str(Path(__file__).parent.parent / f"chrome_profile_{uid}")
         
         new_proc = spawn_login_runner(sess_dict["account"], sess_dict["cdp_port"], p_dir)
-        all_procs.append(new_proc)
+        with procs_lock:
+            all_procs.append(new_proc)
         sess_dict["login_proc"] = new_proc
         
         new_ready_event = threading.Event()
@@ -271,18 +272,19 @@ def main() -> None:
         
         threading.Thread(
             target=wait_and_spawn_booking_runner,
-            args=(sess_dict,),
+            args=(sess_dict, new_ready_event, new_proc),
             daemon=True,
         ).start()
 
     for idx, account in enumerate(accounts):
         cdp_port = BASE_CDP_PORT + idx
         sess_dict = {
-            "account":     account,
-            "cdp_port":    cdp_port,
-            "login_proc":  None,
-            "ready_event": None,
-            "restart_history": [],
+            "account":              account,
+            "cdp_port":             cdp_port,
+            "login_proc":           None,
+            "ready_event":          None,
+            "login_restart_history":   [],
+            "booking_restart_history": [],
         }
         sessions.append(sess_dict)
         start_bot_session(sess_dict)
@@ -290,7 +292,8 @@ def main() -> None:
     # ── Start slot monitor ────────────────────────────────────
     if not args.no_monitor:
         monitor_proc = spawn_monitor(args.max_fetches)
-        all_procs.append(monitor_proc)
+        with procs_lock:
+            all_procs.append(monitor_proc)
         threading.Thread(
             target=relay_output,
             args=(monitor_proc, "monitor"),
@@ -324,6 +327,12 @@ def main() -> None:
                             kill_chrome_by_port(session["cdp_port"])
                             session["login_proc"] = None
                             session["booking_proc"] = None
+                            session["ready_event"] = None  # Bug 3: clear so phantom threads self-identify
+                            # Bug 4: reset extension_running so monitor doesn't skip this account
+                            try:
+                                _update_bot_state(_get_state_file(session["account"]["username"]), {"extension_running": False, "pending": False})
+                            except Exception:
+                                pass
                             break
                 elif cmd_str.startswith("START:"):
                     uid = cmd_str.split(":")[1]
@@ -339,7 +348,8 @@ def main() -> None:
                 pass
             
             # Clean up dead processes from all_procs
-            all_procs[:] = [p for p in all_procs if p.poll() is None]
+            with procs_lock:
+                all_procs[:] = [p for p in all_procs if p.poll() is None]
 
             # Check for individual bot unexpected exits
             for session in sessions:
@@ -351,10 +361,16 @@ def main() -> None:
                     code = proc.returncode
                     log(f"⚠️  login:{customer} exited with code {code}")
                     session["login_proc"] = None
+                    # Bug 2: always clear booking_proc, regardless of whether it was still alive
                     if booking_proc and booking_proc.poll() is None:
                         subprocess.run(["taskkill", "/F", "/T", "/PID", str(booking_proc.pid)], capture_output=True)
-                        session["booking_proc"] = None
-                        
+                    session["booking_proc"] = None
+                    # Bug 4: reset extension_running so monitor doesn't skip this account
+                    try:
+                        _update_bot_state(_get_state_file(session["account"]["username"]), {"extension_running": False})
+                    except Exception:
+                        pass
+
                     if code == 99:
                         log(f"🛑 Chrome window for '{customer}' was manually closed. Aborting auto-restart.")
                         continue
@@ -363,11 +379,12 @@ def main() -> None:
                     log(f"🔄 Restarting login for '{customer}' after crash …")
                     
                     now = time.time()
-                    history = session.setdefault("restart_history", [])
+                    # Bug 1: use dedicated login restart history
+                    history = session.setdefault("login_restart_history", [])
                     history.append(now)
                     history[:] = [t for t in history if now - t < 300]
                     if len(history) > 3:
-                        log(f"⚠️  Too many rapid restarts for '{customer}'. Waiting 60s...")
+                        log(f"⚠️  Too many rapid login restarts for '{customer}'. Waiting 60s...")
                         time.sleep(60)
                         history.clear()
                         
@@ -375,9 +392,16 @@ def main() -> None:
                     time.sleep(4)
                     start_bot_session(session)
 
-                if booking_proc and booking_proc.poll() is not None:
-                    code = booking_proc.returncode
+                # Re-read from session dict since login handler above may have cleared it
+                current_booking_proc = session.get("booking_proc")
+                if current_booking_proc and current_booking_proc.poll() is not None:
+                    code = current_booking_proc.returncode
                     session["booking_proc"] = None
+                    # Bug 4: reset extension_running so monitor doesn't skip this account
+                    try:
+                        _update_bot_state(_get_state_file(session["account"]["username"]), {"extension_running": False})
+                    except Exception:
+                        pass
                     if code == 42:
                         log(f"⚠️  booking:{customer} encountered 429 Too Many Requests. Restarting in 25 minutes...")
                         if proc and proc.poll() is None:
@@ -387,6 +411,14 @@ def main() -> None:
                         def delayed_restart(sess_dict):
                             time.sleep(25 * 60)
                             c_name = sess_dict["account"]["customer_name"]
+                            # Bug 1 fix: don't resurrect a manually-stopped bot
+                            if sess_dict.get("login_proc") is not None or sess_dict.get("booking_proc") is not None:
+                                log(f"⏭️  Skipping delayed restart for '{c_name}' — already running.")
+                                return
+                            if sess_dict.get("ready_event") is None and sess_dict.get("login_proc") is None:
+                                # ready_event is cleared by STOP command
+                                log(f"⏭️  Skipping delayed restart for '{c_name}' — was manually stopped.")
+                                return
                             log(f"🔄 Restarting bot for '{c_name}' after 25m delay ...")
                             kill_chrome_by_port(sess_dict["cdp_port"])
                             time.sleep(4)
@@ -397,17 +429,17 @@ def main() -> None:
                         # Session expiry or unexpected booking crash — restart immediately
                         log(f"⚠️  booking:{customer} exited with code {code} — restarting bot …")
                         
-                        # Don't spam Slack for routine 10-minute inactivity restarts
                         if proc and proc.poll() is None:
                             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
                         session["login_proc"] = None
                         
                         now = time.time()
-                        history = session.setdefault("restart_history", [])
+                        # Bug 1: use dedicated booking restart history
+                        history = session.setdefault("booking_restart_history", [])
                         history.append(now)
                         history[:] = [t for t in history if now - t < 300]
                         if len(history) > 3:
-                            log(f"⚠️  Too many rapid restarts for '{customer}'. Waiting 60s...")
+                            log(f"⚠️  Too many rapid booking restarts for '{customer}'. Waiting 60s...")
                             time.sleep(60)
                             history.clear()
                             

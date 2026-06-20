@@ -13,7 +13,6 @@ import json
 import hashlib
 import os
 import sys
-import re
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -22,13 +21,18 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 import argparse
 
-from src.monitor.api import fetch_rows
-from src.monitor.matcher import build_buckets, find_valid_pair, find_valid_consular_slot, parse_date, normalize_city
-from src.monitor.notifier import log_slots_for_analysis
-from slack import format_slack_message, send_slack, send_slack_error
+# Ensure project root is on the path for top-level imports (slack.py) and src.* packages
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
-ACCOUNTS_FILE = Path(__file__).parent.parent / "accounts.json"
-STATE_FILE = Path(__file__).parent.parent / "slot_alert_state.json"
+from src.monitor.api import fetch_rows
+from src.monitor.matcher import build_buckets, find_valid_pair, find_valid_consular_slot
+from src.monitor.notifier import log_slots_for_analysis
+from src.common.utils import safe_id
+from src.common.config import ACCOUNTS_FILE, SLOT_ALERT_STATE_FILE, normalize_city, parse_date
+from src.common.state import read_state as _read_bot_state, update_state as _update_bot_state
+from slack import format_slack_message, send_slack, send_slack_error
 
 ALERT_COOLDOWN_SECONDS = 15 * 60
 ERROR_BACKOFF_SECONDS = 40
@@ -37,15 +41,15 @@ POLL_MIN_SECONDS = 15
 POLL_MAX_SECONDS = 20
 
 def load_state():
-    if not STATE_FILE.exists():
+    if not SLOT_ALERT_STATE_FILE.exists():
         return {}
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        return json.loads(SLOT_ALERT_STATE_FILE.read_text(encoding="utf-8"))
     except Exception:
         return {}
 
 def save_state(state):
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    SLOT_ALERT_STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 def make_alert_key(uid, ofc_city, consular_city, ofc_date, consular_date):
     raw = f"{uid}|{ofc_city}|{consular_city}|{ofc_date}|{consular_date}"
@@ -58,19 +62,6 @@ def should_alert(alert_key, state):
 def mark_alert(alert_key, state):
     state[alert_key] = time.time()
 
-def _read_bot_state(state_file: Path) -> dict:
-    try:
-        return json.loads(state_file.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _write_bot_state(state_file: Path, state: dict):
-    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-def safe_id(username: str) -> str:
-    """Generate a filesystem-safe unique identifier from a username/email."""
-    return re.sub(r'[^a-zA-Z0-9]', '_', str(username))
 
 def load_customers():
     if not ACCOUNTS_FILE.exists():
@@ -132,7 +123,29 @@ def load_customers():
 
     return customers
 
-if __name__ == "__main__":
+
+def _get_effective_dates(customer):
+    """Compute effective start dates for a customer, respecting prevent_immediate.
+    
+    Returns (effective_ofc_start, effective_consular_start) without mutating
+    the customer dict so the original dates are preserved across poll cycles.
+    """
+    ofc_start = customer["ofc_start"]
+    consular_start = customer["consular_start"]
+
+    if customer.get("prevent_immediate"):
+        dynamic_start = datetime.today() + timedelta(days=3)
+        dynamic_start = dynamic_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        if not ofc_start or ofc_start < dynamic_start:
+            ofc_start = dynamic_start
+        if not consular_start or consular_start < dynamic_start:
+            consular_start = dynamic_start
+
+    return ofc_start, consular_start
+
+
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-fetches", type=int, default=None, help="Max number of times to fetch from API")
     args = parser.parse_args()
@@ -142,9 +155,10 @@ if __name__ == "__main__":
 
     print(f"Running qualified slot monitor (interval ~{POLL_MIN_SECONDS}s, max_fetches={max_fetches if max_fetches else 'unlimited'})...")
     state = load_state()
-    customers = load_customers()
 
     while True:
+        # Bug 7 fix: reload customers on every iteration to pick up GUI changes
+        customers = load_customers()
         if max_fetches is not None and fetches_count >= max_fetches:
             msg = f"🛑 Reached maximum limit of {max_fetches} API fetches. Monitor stopping."
             print(msg)
@@ -171,22 +185,16 @@ if __name__ == "__main__":
                 action_mode = customer["action_mode"]
                 uid = customer["uid"]
 
-                # Apply Prevent Immediate Booking logic dynamically
-                if customer.get("prevent_immediate"):
-                    dynamic_start = datetime.today() + timedelta(days=3)
-                    dynamic_start = dynamic_start.replace(hour=0, minute=0, second=0, microsecond=0)
-                    
-                    if not customer["ofc_start"] or customer["ofc_start"] < dynamic_start:
-                        customer["ofc_start"] = dynamic_start
-                    if not customer["consular_start"] or customer["consular_start"] < dynamic_start:
-                        customer["consular_start"] = dynamic_start
+                # Compute effective dates without mutating the customer dict
+                # so original dates are preserved across poll cycles
+                effective_ofc_start, effective_consular_start = _get_effective_dates(customer)
 
                 if action_mode == "RESCHEDULE_CONSULAR":
                     # ── Consular Reschedule Only path ────────────────────────────
                     consular_slot, matched_consular_city = find_valid_consular_slot(
                         consular_buckets,
                         customer["consular_cities"],
-                        customer["consular_start"],
+                        effective_consular_start,
                         customer["consular_end"],
                     )
 
@@ -227,19 +235,18 @@ if __name__ == "__main__":
                     if bot_state.get("pending"):
                         print(f"⚠️ Overwriting unhandled pending trigger for '{customer_name}' with newer reschedule slot.")
 
-                    bot_state.update({
+                    _update_bot_state(state_file, {
                         "extension_running": False,
                         "pending": True,
                         "trigger_timestamp": time.time(),
                         "action_type": "RESCHEDULE_CONSULAR",
                         "consularCities": customer["consular_cities"],
                         "consularPriorityCity": matched_consular_city,
-                        "consularStartDate": customer["consular_start"].strftime("%Y-%m-%d"),
+                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d"),
                         "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
                     })
-                    _write_bot_state(state_file, bot_state)
                     print(f"✅ Reschedule trigger queued for '{customer_name}'.")
 
                 else:
@@ -249,9 +256,9 @@ if __name__ == "__main__":
                         consular_buckets,
                         customer["ofc_cities"],
                         customer["consular_cities"],
-                        customer["ofc_start"],
+                        effective_ofc_start,
                         customer["ofc_end"],
-                        customer["consular_start"],
+                        effective_consular_start,
                         customer["consular_end"],
                     )
 
@@ -301,24 +308,22 @@ if __name__ == "__main__":
                     if bot_state.get("pending"):
                         print(f"⚠️ Overwriting unhandled pending trigger for '{customer_name}' with newer sniper slot.")
 
-                    # Extension is idle — write slot data + set pending=True
-                    bot_state.update({
+                    _update_bot_state(state_file, {
                         "extension_running": False,
                         "pending": True,
                         "trigger_timestamp": time.time(),
                         "action_type": "SNIPER",
                         "ofcCities": customer["ofc_cities"],
                         "ofcPriorityCity": matched_ofc_city,
-                        "ofcStartDate": customer["ofc_start"].strftime("%Y-%m-%d"),
+                        "ofcStartDate": effective_ofc_start.strftime("%Y-%m-%d"),
                         "ofcEndDate": customer["ofc_end"].strftime("%Y-%m-%d"),
                         "consularCities": customer["consular_cities"],
                         "consularPriorityCity": matched_consular_city,
-                        "consularStartDate": customer["consular_start"].strftime("%Y-%m-%d"),
+                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d"),
                         "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
                     })
-                    _write_bot_state(state_file, bot_state)
                     print(f"✅ Trigger queued for '{customer_name}' — booking runner will pick it up.")
 
 
@@ -339,3 +344,7 @@ if __name__ == "__main__":
             continue
 
         time.sleep(random.uniform(POLL_MIN_SECONDS, POLL_MAX_SECONDS))
+
+
+if __name__ == "__main__":
+    main()

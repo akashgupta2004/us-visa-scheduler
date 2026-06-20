@@ -4,46 +4,70 @@ An automated system that monitors US Visa appointment slots and books OFC (Offsi
 
 ## 🏗️ Architecture
 
-The system is a **three-process pipeline**:
+The system is a **multi-process pipeline** managed by an orchestrator:
 
 ```
-┌──────────────┐     trigger.json     ┌──────────────────┐
-│  bot.py      │                      │  bot2_ofc_       │
-│  (Login &    │◄─── Chrome CDP ─────►│  booking.py      │
-│   Session)   │                      │  (Auto-Booker)   │
-└──────────────┘                      └──────────────────┘
-                                            ▲
-                                            │ trigger.json
-                                            │
-                                      ┌─────┴────────────┐
-                                      │  slot_monitor.py │
-                                      │  (Slot Watcher)   │
-                                      └──────────────────┘
+                        ┌───────────────────────┐
+                        │    orchestrator.py     │
+                        │  (Process Manager)     │
+                        └───┬───────┬───────┬───┘
+                            │       │       │
+             ┌──────────────┘       │       └──────────────┐
+             ▼                      ▼                      ▼
+  ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+  │  login_runner.py │   │ booking_runner.py │   │ monitor_runner.py│
+  │  (Chrome Login)  │   │  (Auto-Booker)   │   │  (Slot Watcher)  │
+  └──────────────────┘   └──────────────────┘   └──────────────────┘
+         │                       ▲                      │
+         │ Chrome CDP            │ state_*.json         │ API poll
+         ▼                       │                      ▼
+  ┌──────────────┐        ┌──────┴─────────┐    ┌──────────────────┐
+  │   Chrome     │        │ Browser        │    │ CheckVisaSlots   │
+  │  (per acct)  │───────►│ Extension      │    │ API              │
+  └──────────────┘        └────────────────┘    └──────────────────┘
 ```
 
 | Component | Purpose |
 |---|---|
-| `bot.py` | Launches Chrome with remote debugging, logs in, handles CAPTCHA & security questions, keeps session alive |
-| `bot2_ofc_booking.py` | Connects to the same Chrome session, parks on the OFC scheduling page, and books instantly when triggered |
-| `slot_monitor.py` | Polls a slot-checking API, matches slots against customer criteria, writes `trigger.json` when a valid slot is found, and sends Slack alerts |
+| `orchestrator.py` | Manages all child processes, assigns CDP ports, handles auto-restart on crashes |
+| `login_runner.py` | Launches Chrome with remote debugging, logs in, handles CAPTCHA & security questions, keeps session alive |
+| `booking_runner.py` | Connects to authenticated Chrome, watches state files for triggers, delegates booking to browser extension |
+| `monitor_runner.py` | Polls the CheckVisaSlots API, matches slots against customer criteria, writes triggers and sends Slack alerts |
 
 ## 📁 File Structure
 
 ```
 bot/
-├── bot.py                          # Login bot (run first)
-├── bot2_ofc_booking.py             # OFC booking bot (run second)
-├── slot_monitor.py                 # Slot monitor (run third)
+├── main.py                         # Entry point (starts orchestrator)
 ├── gui.py                          # Tkinter dashboard (optional)
-├── show_slots.py                   # Quick slot viewer utility
-├── test_trigger.py                 # Test trigger.json generation
-├── test_connection.py              # Test Chrome CDP connection
-├── .env                            # Credentials (not committed)
+├── slack.py                        # Slack notification integration
+├── accounts.json                   # Customer booking criteria & credentials (not committed)
+├── .env                            # API keys & secrets (not committed)
 ├── .env.example                    # Template for .env
-├── security_questions.json         # Security question answers
-├── accounts.json                   # Customer booking criteria and credentials
 ├── requirements.txt                # Python dependencies
-└── chrome_profile/                 # Chrome user data (auto-created)
+├── src/
+│   ├── orchestrator.py             # Multi-account process manager
+│   ├── login_runner.py             # Chrome login & session keeper
+│   ├── booking_runner.py           # Trigger watcher & booking executor
+│   ├── monitor_runner.py           # Slot polling & analytics
+│   ├── common/                     # Shared utilities
+│   │   ├── utils.py                # safe_id() and other helpers
+│   │   ├── config.py               # Paths, constants, account loading
+│   │   └── state.py                # Thread-safe state file I/O
+│   ├── auth/                       # Authentication modules
+│   │   ├── browser.py              # Chrome launch & CDP connection
+│   │   ├── login.py                # Login flow & waiting room
+│   │   ├── captcha.py              # CAPTCHA solving (FastCaptcha)
+│   │   ├── security.py             # Security question handling
+│   │   └── utils.py                # Human-like delay/click/type
+│   ├── booking/                    # Booking modules
+│   │   ├── cdp_client.py           # Portal navigation
+│   │   └── executor.py             # Extension trigger & result handling
+│   └── monitor/                    # Monitoring modules
+│       ├── api.py                  # CheckVisaSlots API client
+│       ├── matcher.py              # Slot matching & date logic
+│       └── notifier.py             # CSV/JSONL analytics logging
+└── chrome_profile_*/               # Chrome user data (auto-created, not committed)
 ```
 
 ## 🚀 Quick Start
@@ -60,25 +84,11 @@ playwright install chromium
 Copy `.env.example` to `.env` and fill in your credentials:
 
 ```env
-VISA_USERNAME=your_username
-VISA_PASSWORD=your_password
 FASTCAPTCHA_API_KEY=your_api_key
-HEADLESS=false
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 ```
 
-### 3. Configure Security Questions
-
-Edit `security_questions.json` with your security question answers:
-
-```json
-{
-  "favourite food": "YourAnswer1",
-  "born": "YourAnswer2",
-  "pet": "YourAnswer3"
-}
-```
-
-### 4. Configure Customer Criteria
+### 3. Configure Customer Criteria
 
 Edit `accounts.json` or use `gui.py` to manage your customers and booking criteria.
 A customer record should include:
@@ -104,55 +114,43 @@ A customer record should include:
 
 ### 5. Run the System
 
-Run these in **three separate terminals**, in order:
+**Option A — Single command (recommended):**
 
 ```bash
-# Terminal 1 — Login & keep session alive
-python bot.py
-
-# Terminal 2 — Park on OFC page & wait for trigger
-python bot2_ofc_booking.py
-
-# Terminal 3 — Monitor slots & trigger booking
-python slot_monitor.py
+python main.py
 ```
 
-### Alternative: Use the GUI
+The orchestrator will launch Chrome, log in, start booking runners, and monitor slots for **all accounts** in `accounts.json` automatically.
+
+**Option B — Use the GUI dashboard:**
 
 ```bash
 python gui.py
 ```
 
-This provides a unified dashboard with start/stop controls and live log streaming.
+This provides a unified dashboard with start/stop controls, per-account management, and live log streaming.
 
 ## ⚙️ How It Works
 
-1. **`bot.py`** opens Chrome with `--remote-debugging-port=9222`, navigates to the visa scheduling site, handles Cloudflare waiting rooms, logs in with your credentials, solves CAPTCHAs, and answers security questions. It then keeps the browser session open.
+1. **`orchestrator.py`** reads `accounts.json` and for each account assigns a unique Chrome CDP port (9222, 9223, …). It spawns `login_runner.py` and, once login succeeds, `booking_runner.py`. It also starts a single `monitor_runner.py` instance.
 
-2. **`bot2_ofc_booking.py`** connects to the same Chrome via CDP, navigates to the OFC scheduling page, and enters a polling loop — checking for `trigger.json` every 0.5 seconds while moving the mouse every 60 seconds to prevent session timeout.
+2. **`login_runner.py`** opens Chrome with `--remote-debugging-port`, navigates to the visa scheduling site, handles Cloudflare waiting rooms, logs in with your credentials, solves CAPTCHAs, and answers security questions. It then keeps the browser session open.
 
-3. **`slot_monitor.py`** polls the CheckVisaSlots API every 15–20 seconds, looking for OFC + Consular date pairs that match your criteria (city and date range). When a match is found, it:
+3. **`booking_runner.py`** connects to the same Chrome via CDP, navigates to the portal, and polls `state_<customer>.json` every 0.5 seconds while keeping the session alive with mouse movements. When a trigger is detected, it delegates booking to the browser extension via `postMessage`.
+
+4. **`monitor_runner.py`** polls the CheckVisaSlots API every 15–20 seconds, looking for OFC + Consular date pairs that match your criteria (city and date range). When a match is found, it:
    - Sends a Slack notification
-   - Writes `trigger.json` with the target date and city
+   - Writes a trigger to `state_<customer>.json`
 
-4. **Bot2 detects `trigger.json`** and immediately:
+5. **`booking_runner.py` detects the trigger** and immediately sends a message to the browser extension, which:
    - Selects the city from the dropdown
    - Navigates the calendar to the target month
-   - Clicks the available (green) date
-   - Waits for time slots to load (up to 60s)
-   - Selects the first available time slot
-   - Force-enables and clicks Submit
-   - Waits for booking confirmation redirect
+   - Clicks the available date
+   - Selects a time slot and submits
 
 ## 🔧 Configuration
 
-### Bot2 City (in `bot2_ofc_booking.py`)
-
-```python
-BOOKING_OFC_CITY = "HYDERABAD"  # Change to your target city
-```
-
-### Slot Monitor Timing (in `slot_monitor.py`)
+### Slot Monitor Timing (in `src/monitor_runner.py`)
 
 ```python
 POLL_MIN_SECONDS = 15       # Min seconds between API polls

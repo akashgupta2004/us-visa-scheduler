@@ -12,19 +12,22 @@ import os
 import sys
 import time
 import logging
-import re
 from pathlib import Path
 
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
+
+# Ensure project root is on the path for top-level imports (slack.py) and src.* packages
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 # Import modularized components
 from src.auth.browser import ensure_chrome_debug_running, connect_to_chrome
 from src.auth.login import wait_for_waiting_room, login
 from src.auth.security import handle_security_question
 from src.auth.utils import human_delay
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.common.utils import safe_id
 from slack import send_slack_error
 
 load_dotenv()
@@ -43,12 +46,9 @@ def _is_portal_url(url: str) -> bool:
     return (
         "usvisascheduling.com" in url
         and not _is_login_url(url)
-        and any(k in url for k in ["/schedule", "dashboard", "applicant_details", "/en-us/"])
+        and any(k in url for k in ["/schedule", "/ofc-schedule", "en-us"])
     )
 
-def safe_id(username: str) -> str:
-    """Generate a filesystem-safe unique identifier from a username/email."""
-    return re.sub(r'[^a-zA-Z0-9]', '_', str(username))
 
 def _get_state_file(args) -> Path:
     uid = safe_id(args.username)
@@ -101,9 +101,9 @@ async def run() -> None:
 
     missing = []
     if not args.username:
-        missing.append("--username / VISA_USERNAME")
+        missing.append("--username")
     if not args.password:
-        missing.append("--password / VISA_PASSWORD")
+        missing.append("--password")
 
     if missing:
         log.error(f"Missing required values: {', '.join(missing)}")
@@ -140,7 +140,7 @@ async def run() -> None:
                 await wait_for_waiting_room(page, log, timeout_minutes=480)
                 await human_delay(1000, 2000)
 
-                # ── 3. Wait for login page or Dashboard ──────────────
+                # ── 3. Wait for login page or Schedule Portal ──────────────
                 log.info("Waiting for automatic redirect (up to 5 minutes) …")
                 deadline = time.time() + 300
                 while time.time() < deadline:

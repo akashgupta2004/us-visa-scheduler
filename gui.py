@@ -4,7 +4,6 @@ import json
 import subprocess
 import threading
 import tkinter as tk
-import re
 import shutil
 import time
 from datetime import datetime, timedelta
@@ -12,14 +11,13 @@ from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
 from tkcalendar import DateEntry
 
+from src.common.utils import safe_id
+from src.common.state import update_state
+
 # ─── Script Paths ────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 ACCOUNTS_FILE = BASE_DIR / "accounts.json"
 ORCHESTRATOR_SCRIPT = BASE_DIR / "src" / "orchestrator.py"
-
-def safe_id(username: str) -> str:
-    """Generate a filesystem-safe unique identifier from a username/email."""
-    return re.sub(r'[^a-zA-Z0-9]', '_', str(username))
 
 CITY_OPTIONS = ["CHENNAI", "MUMBAI", "HYDERABAD", "DELHI", "KOLKATA"]
 
@@ -61,12 +59,6 @@ class App(tk.Tk):
 
     def _on_closing(self):
         """Ensure all background processes are killed when the user closes the GUI window with the 'X' button."""
-        if self.orchestrator_proc:
-            try:
-                import subprocess
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.orchestrator_proc.pid)], capture_output=True)
-            except Exception:
-                pass
         self.destroy()
 
     def _configure_styles(self):
@@ -839,16 +831,18 @@ class App(tk.Tk):
                 if not force:
                     return
 
-            existing.update({
+            updates = {
                 "extension_running": False,
                 "pending": True,
+                "trigger_timestamp": time.time(),
                 "action_type": action_type,
                 "customer_name": customer,
-            })
+                "prevent_immediate": acc.get("prevent_immediate", False),
+            }
             
             # Action specific data
             if action_type == "SNIPER":
-                existing.update({
+                updates.update({
                     "ofcCities": acc.get("ofcCities", []),
                     "ofcStartDate": acc.get("ofcStartDate", ""),
                     "ofcEndDate": acc.get("ofcEndDate", ""),
@@ -857,13 +851,13 @@ class App(tk.Tk):
                     "consularEndDate": acc.get("consularEndDate", ""),
                 })
             else:
-                existing.update({
+                updates.update({
                     "consularCities": acc.get("consularCities", []),
                     "consularStartDate": acc.get("consularStartDate", ""),
                     "consularEndDate": acc.get("consularEndDate", ""),
                 })
                 
-            state_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+            update_state(state_path, updates)
             self._log(f"[GUI] ⚡ {action_type} trigger queued for '{customer}'.")
             messagebox.showinfo("Triggered", f"{action_type} queued for '{customer}'.\nBooking runner will pick it up within 0.5s.")
         except Exception as e:

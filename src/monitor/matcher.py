@@ -1,53 +1,11 @@
 from datetime import datetime
-
-CITY_ALIASES = {
-    "MUMBAI": "MUMBAI",
-    "MUMBAI VAC": "MUMBAI",
-    "CHENNAI": "CHENNAI",
-    "CHENNAI VAC": "CHENNAI",
-    "HYDERABAD": "HYDERABAD",
-    "HYDERABAD VAC": "HYDERABAD",
-    "DELHI": "DELHI",
-    "DELHI VAC": "DELHI",
-    "NEW DELHI": "DELHI",
-    "NEW DELHI VAC": "DELHI",
-    "KOLKATA": "KOLKATA",
-    "KOLKATA VAC": "KOLKATA",
-}
-
-ALL_CONSULATES = ["CHENNAI", "HYDERABAD", "MUMBAI", "DELHI", "KOLKATA"]
-
-DATE_FORMATS = [
-    "%d %b %Y",
-    "%Y-%m-%d",
-    "%d/%m/%Y",
-    "%m/%d/%Y",
-    "%d-%m-%Y",
-]
-
-def normalize_city(value: str) -> str:
-    raw = str(value or "").strip().upper()
-    if raw == "ANY":
-        return "ANY"
-    return CITY_ALIASES.get(raw, raw)
-
-def parse_date(value):
-    if value is None or value == "":
-        return None
-    if isinstance(value, datetime):
-        return value
-    try:
-        if hasattr(value, "to_pydatetime"):
-            return value.to_pydatetime()
-    except Exception:
-        pass
-    s = str(value).strip()
-    for fmt in DATE_FORMATS:
-        try:
-            return datetime.strptime(s, fmt)
-        except ValueError:
-            continue
-    return None
+from src.common.config import (
+    CITY_ALIASES,
+    ALL_CONSULATES,
+    DATE_FORMATS,
+    normalize_city,
+    parse_date,
+)
 
 def safe_int(value, default=0):
     try:

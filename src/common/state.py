@@ -1,0 +1,96 @@
+"""
+Thread-safe state file I/O with Windows-compatible file locking.
+
+State files (src/state_<uid>.json) are shared between the monitor runner
+and the booking runner. This module provides locked read/write to prevent
+race conditions.
+"""
+
+import json
+import os
+import time
+from pathlib import Path
+
+
+def _acquire_lock(lock_file: Path, timeout: float = 5.0) -> bool:
+    """Acquire a cross-process lock using a dedicated .lock file."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            # os.O_EXCL ensures this fails if the file already exists
+            fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            time.sleep(0.05)
+        except OSError:
+            time.sleep(0.05)
+    return False
+
+
+def _release_lock(lock_file: Path) -> None:
+    """Release the cross-process lock by deleting the .lock file."""
+    try:
+        lock_file.unlink()
+    except OSError:
+        pass
+
+
+def read_state(state_file: Path) -> dict:
+    """Read and parse a JSON state file. Returns {} on any error."""
+    try:
+        return json.loads(state_file.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def write_state(state_file: Path, state: dict) -> None:
+    """Write state dict to a JSON file using atomic write pattern.
+    
+    Writes to a temporary file first, then replaces the target to minimize
+    the window where a concurrent reader could see a partial write.
+    """
+    tmp_path = state_file.with_suffix(".json.tmp")
+    try:
+        tmp_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        # os.replace is atomic on the same filesystem
+        os.replace(str(tmp_path), str(state_file))
+    except Exception:
+        # Fallback: direct write if atomic replace fails
+        state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def set_flag(state_file: Path, **flags) -> None:
+    """Atomically update one or more top-level keys in the state file.
+    Deprecated: use update_state instead.
+    """
+    update_state(state_file, flags)
+
+
+def update_state(state_file: Path, updates: dict) -> None:
+    """Atomically read, merge updates, and write the state file using a cross-process lock."""
+    lock_file = state_file.with_suffix(".lock")
+    if _acquire_lock(lock_file):
+        try:
+            state = read_state(state_file)
+            state.update(updates)
+            write_state(state_file, state)
+        finally:
+            _release_lock(lock_file)
+    else:
+        # If lock fails, fallback to direct read-modify-write
+        state = read_state(state_file)
+        state.update(updates)
+        write_state(state_file, state)
+
+
+def get_state_file(username: str) -> Path:
+    """Get the state file path for a given username."""
+    from src.common.utils import safe_id
+    uid = safe_id(username)
+    # State files live in the src/ directory alongside the runners
+    return Path(__file__).resolve().parent.parent / f"state_{uid}.json"

@@ -71,6 +71,7 @@ def ensure_chrome_debug_running(cdp_port: int, profile_dir: str, log: logging.Lo
         f"--user-data-dir={profile_dir}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--hide-crash-restore-bubble",
         "--disable-blink-features=AutomationControlled",
         f"--disable-extensions-except={extension_path}",
         f"--load-extension={extension_path}",
@@ -99,8 +100,17 @@ async def connect_to_chrome(playwright, cdp_port: int, log: logging.Logger, hand
     context = browser.contexts[0] if browser.contexts else await browser.new_context()
 
     # Use existing page or open new one
+    page = None
     if context.pages:
-        page = context.pages[-1]
+        for p in context.pages:
+            try:
+                if "usvisascheduling.com" in p.url.lower():
+                    page = p
+                    break
+            except Exception:
+                pass
+        if not page:
+            page = context.pages[-1]
     else:
         page = await context.new_page()
 

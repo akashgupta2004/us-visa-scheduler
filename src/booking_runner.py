@@ -30,15 +30,22 @@ import time
 import logging
 import random
 import argparse
-import re
 from pathlib import Path
 
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
 
+# Ensure project root is on the path for top-level imports (slack.py) and src.* imports
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from src.auth.browser import connect_to_chrome
 from src.booking.cdp_client import ensure_on_portal
 from src.booking.executor import trigger_extension_booking, trigger_extension_reschedule
+from src.common.utils import safe_id
+from src.common.state import read_state as _read_state, write_state as _write_state, set_flag as _set_flag, update_state as _update_state
+from src.common.config import ACCOUNTS_FILE
 from slack import send_slack
 from slack import send_slack_error
 
@@ -47,8 +54,6 @@ from src.auth.login import login, wait_for_waiting_room
 from src.auth.security import handle_security_question
 
 load_dotenv()
-
-ACCOUNTS_FILE = Path(__file__).parent.parent / "accounts.json"
 
 POLL_INTERVAL = 0.5   # seconds between state file checks
 
@@ -59,28 +64,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("booking_runner")
 
-def safe_id(username: str) -> str:
-    """Generate a filesystem-safe unique identifier from a username/email."""
-    return re.sub(r'[^a-zA-Z0-9]', '_', str(username))
-
-# ─── State file helpers ───────────────────────────────────────────────────────
-
-def _read_state(state_file: Path) -> dict:
-    try:
-        return json.loads(state_file.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def _write_state(state_file: Path, state: dict):
-    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
-
-
-def _set_flag(state_file: Path, **flags):
-    """Atomically update one or more top-level keys in the state file."""
-    state = _read_state(state_file)
-    state.update(flags)
-    _write_state(state_file, state)
+# ─── State file helpers (wrappers around shared state module) ─────────────────
 
 # ─── Session Recovery ─────────────────────────────────────────────────────────
 
@@ -107,10 +91,10 @@ async def recover_session(page, customer: str, username: str):
     if not fastcaptcha:
         log.warning("FASTCAPTCHA_API_KEY missing for recovery. Captchas will fail.")
         
-    # 2. Trigger redirect by simply reloading the page
+    # 2. Trigger redirect by navigating back to the pristine home page
     try:
-        log.info("Reloading the page to trigger session validation...")
-        await page.reload(wait_until="domcontentloaded", timeout=30000)
+        log.info("Navigating to home page to trigger session validation...")
+        await page.goto("https://www.usvisascheduling.com/en-US/", wait_until="domcontentloaded", timeout=30000)
     except Exception as e:
         log.error(f"Failed during page reload: {e}")
     
@@ -121,10 +105,17 @@ async def recover_session(page, customer: str, username: str):
         log.error(f"Error waiting for waiting room during recovery: {e}")
         return False
         
-    # 4. Check if we reached login
+    # 4. Wait for automatic redirect (SPA)
+    log.info("Waiting up to 10s for SPA to redirect to login if session is expired...")
+    for _ in range(5):
+        cur_url = page.url.lower()
+        if any(k in cur_url for k in ["b2clogin", "logon", "login", "signin", "sign-in"]):
+            break
+        await asyncio.sleep(2)
+
     cur_url = page.url.lower()
     if not any(k in cur_url for k in ["b2clogin", "logon", "login", "signin", "sign-in"]):
-        if "usvisascheduling.com" in cur_url and any(k in cur_url for k in ["/schedule", "/en-us"]):
+        if "usvisascheduling.com" in cur_url and any(k in cur_url for k in ["/schedule", "/ofc-schedule", "/en-us"]):
             log.info("Already on home or schedule/reschedule page? Recovery maybe not needed.")
             return True
         log.error("Did not reach login page or home page during recovery.")
@@ -184,12 +175,10 @@ async def run(cdp_port: int, customer: str, username: str):
     log.name = f"booking:{customer}"
     
     # Initialise state file — mark extension as not running on startup, but preserve pending triggers
-    existing_state = _read_state(state_file)
-    existing_state.update({
+    _update_state(state_file, {
         "extension_running": False,
         "customer_name": customer,
     })
-    _write_state(state_file, existing_state)
 
     async with async_playwright() as pw:
         browser, context, page = await connect_to_chrome(pw, cdp_port, log, handle_dialogs=True)
@@ -217,6 +206,8 @@ async def run(cdp_port: int, customer: str, username: str):
 
         # Inject listener for extension's session expiry broadcast
         listener_script = """
+            // Always reset the flag on every navigation to prevent stale triggers
+            window._extensionSessionExpired = false;
             if (!window.__sniperExpiryListenerAdded) {
                 window.__sniperExpiryListenerAdded = true;
                 window.addEventListener("message", (event) => {
@@ -360,7 +351,7 @@ async def run(cdp_port: int, customer: str, username: str):
                             random.randint(100, 600),
                         )
                         # 2. Check for silent expiry where URL didn't change
-                        body_text = (await page.inner_text("body", timeout=2000)).lower()
+                        body_text = (await page.content()).lower()
                         if any(phrase in body_text for phrase in [
                             "session has expired", "please sign in", "sign in to continue", "unauthorized"
                         ]):

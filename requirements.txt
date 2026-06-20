@@ -6,3 +6,4 @@ pandas>=2.0.0
 Pillow>=10.0.0
 fastcaptcha-api
 curl_cffi>=0.6.0
+tkcalendar>=1.6.1

@@ -7,7 +7,12 @@ from pathlib import Path
 from datetime import datetime
 from playwright.async_api import Page
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from src.common.config import DATE_FORMATS
+
+# Ensure project root is on the path for top-level imports (slack.py)
+_project_root = str(Path(__file__).resolve().parent.parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 from slack import send as send_slack
 
 
@@ -32,21 +37,16 @@ async def check_for_page_limit(page: Page, customerName: str, log: logging.Logge
 # Default city — used only for display purposes.
 DEFAULT_OFC_CITY = "HYDERABAD"
 
-# City name mapping: slot monitor format → extension format
+# City name mapping: internal canonical form → extension/portal dropdown form.
+# The monitor normalizes all cities to canonical form (e.g. "NEW DELHI" → "DELHI").
+# The visa portal dropdown uses "NEW DELHI" as the label, so we must reverse-map
+# when communicating with the browser extension.
 CITY_NORMALIZE = {
     "DELHI": "NEW DELHI",
 }
 
-DATE_FORMATS = [
-    "%d %b %Y",
-    "%Y-%m-%d",
-    "%d/%m/%Y",
-    "%m/%d/%Y",
-    "%d-%m-%Y",
-]
-
 def normalize_city(city: str) -> str:
-    """Map city names from slot monitor format to extension format."""
+    """Map city names from internal canonical form to extension/portal form."""
     upper = city.strip().upper()
     return CITY_NORMALIZE.get(upper, upper)
 

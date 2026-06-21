@@ -403,13 +403,13 @@ def main() -> None:
                     except Exception:
                         pass
                     if code == 42:
-                        log(f"⚠️  booking:{customer} encountered 429 Too Many Requests. Restarting in 25 minutes...")
+                        log(f"⚠️  booking:{customer} encountered 429 Too Many Requests. Restarting in 45 minutes...")
                         if proc and proc.poll() is None:
                             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
                         session["login_proc"] = None
 
                         def delayed_restart(sess_dict):
-                            time.sleep(25 * 60)
+                            time.sleep(45 * 60)
                             c_name = sess_dict["account"]["customer_name"]
                             # Bug 1 fix: don't resurrect a manually-stopped bot
                             if sess_dict.get("login_proc") is not None or sess_dict.get("booking_proc") is not None:
@@ -419,7 +419,7 @@ def main() -> None:
                                 # ready_event is cleared by STOP command
                                 log(f"⏭️  Skipping delayed restart for '{c_name}' — was manually stopped.")
                                 return
-                            log(f"🔄 Restarting bot for '{c_name}' after 25m delay ...")
+                            log(f"🔄 Restarting bot for '{c_name}' after 45m delay ...")
                             kill_chrome_by_port(sess_dict["cdp_port"])
                             time.sleep(4)
                             start_bot_session(sess_dict)

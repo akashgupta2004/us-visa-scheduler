@@ -62,7 +62,7 @@ def parse_date_to_iso(value) -> str | None:
     return None
 
 
-async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logger) -> bool:
+async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logger) -> tuple[bool, dict]:
     """
     Send a window.postMessage to the extension's content script
     with the booking configuration built from the trigger file.
@@ -122,7 +122,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
     deadline = time.time() + 120
     while time.time() < deadline:
         if await check_for_page_limit(page, customerName, log):
-            return False
+            return False, {}
 
         try:
             result = await page.evaluate("window.__sniperResult")
@@ -133,9 +133,9 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
                     await asyncio.sleep(1)
                     if "appointment-confirmation" in page.url:
                         log.info("✅ Booking SUCCESS (verified via URL navigation)")
-                        return True
+                        return True, {}
                 log.warning(f"Navigated to unexpected URL: {page.url}")
-                return False
+                return False, {}
             raise e
 
         if result is not None:
@@ -149,14 +149,18 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
 
             if status == "success":
                 log.info(f"✅ Booking SUCCESS: {msg}")
-                return True
+                return True, {"waitingForConsular": result.get("waitingForConsular", False), "bookedOfcDate": result.get("bookedOfcDate")}
             else:
+                context = {"waitingForConsular": result.get("waitingForConsular", False), "bookedOfcDate": result.get("bookedOfcDate")}
+                if context.get("waitingForConsular"):
+                    log.warning(f"⚠️ Booking PARTIAL: {msg}")
+                    return False, context
                 log.error(f"❌ Booking FAILURE: {msg}")
                 if "429" in msg:
                     raise Exception("429 Too Many Requests")
                 if "Session expired" in msg:
                     raise Exception("Session expired")
-                return False
+                return False, {}
 
         await asyncio.sleep(1)
 
@@ -167,7 +171,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
         }
         window.__sniperResult = null;
     """)
-    return False
+    return False, {}
 
 
 async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.Logger) -> bool:
@@ -266,3 +270,106 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
         window.__rescheduleResult = null;
     """)
     return False
+
+
+async def trigger_extension_sniper_consular_only(page: Page, trigger: dict, bookedOfcDate: str, log: logging.Logger) -> tuple[bool, dict]:
+    """
+    Send a window.postMessage to the extension's content script
+    with the SNIPER_CONSULAR_ONLY configuration.
+    Expects SNIPER_CONSULAR_ONLY_RESULT back from the content script.
+    """
+    consularCities = trigger.get("consularCities")
+    if not consularCities:
+        log.error("❌ No consularCities in trigger — cannot book consular only.")
+        return False, {}
+    consularCities = [normalize_city(c) for c in consularCities]
+
+    customerName = trigger.get("customer_name", "unknown")
+
+    config = {
+        "consularCities": consularCities,
+        "consularPriorityCity": normalize_city(trigger.get("consularPriorityCity", consularCities[0] if consularCities else "")),
+        "consularStartDate": trigger.get("consularStartDate", ""),
+        "consularEndDate": trigger.get("consularEndDate", ""),
+        "preventImmediateBooking": trigger.get("prevent_immediate", False),
+    }
+
+    log.info(f"🎯 Triggering Consular-Only Sniper for '{customerName}'")
+    log.info(f"   Cities: {', '.join(consularCities)} between {config['consularStartDate']} and {config['consularEndDate']}")
+    log.info(f"   bookedOfcDate: {bookedOfcDate}")
+
+    await page.evaluate("""
+        window.__consularOnlyResult = null;
+        window.__consularOnlyResultListener = function(event) {
+            if (event.source !== window) return;
+            if (event.data && event.data.action === 'SNIPER_CONSULAR_ONLY_RESULT') {
+                window.__consularOnlyResult = event.data;
+                window.removeEventListener('message', window.__consularOnlyResultListener);
+            }
+        };
+        window.addEventListener('message', window.__consularOnlyResultListener);
+    """)
+
+    await page.evaluate("""(data) => {
+        window.postMessage({
+            action: 'EXECUTE_SNIPER_CONSULAR_ONLY',
+            config: data.config,
+            bookedOfcDate: data.bookedOfcDate
+        }, '*');
+    }""", {"config": config, "bookedOfcDate": bookedOfcDate})
+
+    log.info("📨 Consular-Only message sent to extension. Waiting for result (up to 120s) …")
+
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        if await check_for_page_limit(page, customerName, log):
+            return False, {}
+
+        try:
+            result = await page.evaluate("window.__consularOnlyResult")
+        except Exception as e:
+            if "Execution context was destroyed" in str(e):
+                log.info("Navigation detected while waiting for extension...")
+                for _ in range(5):
+                    await asyncio.sleep(1)
+                    if "appointment-confirmation" in page.url:
+                        log.info("✅ Consular-Only SUCCESS (verified via URL navigation)")
+                        return True, {}
+                log.warning(f"Navigated to unexpected URL: {page.url}")
+                return False, {}
+            raise e
+
+        if result is not None:
+            status = result.get("status", "unknown")
+            msg = result.get("msg", "No message")
+
+            try:
+                await page.evaluate("window.__consularOnlyResult = null;")
+            except Exception:
+                pass
+
+            if status == "success":
+                log.info(f"✅ Consular-Only SUCCESS: {msg}")
+                return True, {"waitingForConsular": result.get("waitingForConsular", False), "bookedOfcDate": result.get("bookedOfcDate")}
+            else:
+                context = {"waitingForConsular": result.get("waitingForConsular", False), "bookedOfcDate": result.get("bookedOfcDate")}
+                if context.get("waitingForConsular"):
+                    log.warning(f"⚠️ Consular-Only STILL WAITING: {msg}")
+                    return False, context
+                log.error(f"❌ Consular-Only FAILURE: {msg}")
+                if "429" in msg:
+                    raise Exception("429 Too Many Requests")
+                if "Session expired" in msg:
+                    raise Exception("Session expired")
+                return False, {}
+
+        await asyncio.sleep(1)
+
+    log.error("⏱️ Timed out waiting for Consular-Only result (120s).")
+    await page.evaluate("""
+        if (window.__consularOnlyResultListener) {
+            window.removeEventListener('message', window.__consularOnlyResultListener);
+        }
+        window.__consularOnlyResult = null;
+    """)
+    return False, {}

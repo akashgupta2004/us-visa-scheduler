@@ -27,7 +27,7 @@ def build_buckets(rows):
         display_date = row.get("start_date", "")
         date_obj = parse_date(display_date)
 
-        if not city or count < 2 or not date_obj:
+        if not city or count < 1 or not date_obj:
             continue
 
         item = {

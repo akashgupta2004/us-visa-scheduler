@@ -184,10 +184,77 @@ def main():
                 customer_name = customer["customer_name"]
                 action_mode = customer["action_mode"]
                 uid = customer["uid"]
+                state_file = Path(__file__).parent / f"state_{uid}.json"
+                bot_state = _read_bot_state(state_file)
 
                 # Compute effective dates without mutating the customer dict
                 # so original dates are preserved across poll cycles
                 effective_ofc_start, effective_consular_start = _get_effective_dates(customer)
+                
+                if bot_state.get("waitingForConsular"):
+                    # ── Fallback Consular-Only path (Post-OFC) ────────────────
+                    booked_ofc_date_str = bot_state.get("bookedOfcDate")
+                    if booked_ofc_date_str:
+                        booked_date_obj = parse_date(booked_ofc_date_str)
+                        if booked_date_obj:
+                            # Consular date must be strictly after the OFC date
+                            effective_consular_start = max(effective_consular_start, booked_date_obj + timedelta(days=1))
+                            
+                    consular_slot, matched_consular_city = find_valid_consular_slot(
+                        consular_buckets,
+                        customer["consular_cities"],
+                        effective_consular_start,
+                        customer["consular_end"],
+                    )
+
+                    if not consular_slot:
+                        continue
+
+                    alert_key = make_alert_key(
+                        uid, "", matched_consular_city,
+                        "", consular_slot["display_date"],
+                    )
+
+                    if not should_alert(alert_key, state):
+                        continue
+
+                    send_slack(
+                        format_slack_message(
+                            customer,
+                            None,
+                            consular_slot,
+                            None,
+                            matched_consular_city,
+                        )
+                    )
+                    mark_alert(alert_key, state)
+
+                    print(
+                        f"✅ [FALLBACK] Alert sent for {customer_name} | "
+                        f"Consular {matched_consular_city} {consular_slot['display_date']} ({consular_slot['count']} slots)"
+                    )
+
+                    if bot_state.get("extension_running"):
+                        print(f"⏭️  Extension already running for '{customer_name}' — skipping.")
+                        continue
+
+                    if bot_state.get("pending"):
+                        print(f"⚠️ Overwriting unhandled pending trigger for '{customer_name}' with newer fallback slot.")
+
+                    _update_bot_state(state_file, {
+                        "extension_running": False,
+                        "pending": True,
+                        "trigger_timestamp": time.time(),
+                        "action_type": "SNIPER_CONSULAR_ONLY",
+                        "consularCities": customer["consular_cities"],
+                        "consularPriorityCity": matched_consular_city,
+                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d"),
+                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
+                        "customer_name": customer_name,
+                        "prevent_immediate": customer.get("prevent_immediate", False),
+                    })
+                    print(f"✅ Consular-Only trigger queued for '{customer_name}'.")
+                    continue
 
                 if action_mode == "RESCHEDULE_CONSULAR":
                     # ── Consular Reschedule Only path ────────────────────────────
@@ -226,6 +293,7 @@ def main():
                     )
 
                     state_file = Path(__file__).parent / f"state_{uid}.json"
+                    # Re-read bot state just in case it changed during Slack formatting
                     bot_state = _read_bot_state(state_file)
 
                     if bot_state.get("extension_running"):
@@ -296,7 +364,6 @@ def main():
                     )
 
                     # ── Signal bot2 to book immediately ────────────────────────
-                    uid = customer["uid"]
                     state_file = Path(__file__).parent / f"state_{uid}.json"
 
                     bot_state = _read_bot_state(state_file)

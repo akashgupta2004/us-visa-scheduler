@@ -82,6 +82,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
     customerName = trigger.get("customer_name", "unknown")
 
     config = {
+        "action_type": trigger.get("action_type", "SNIPER"),
         "ofcCities": ofcCities,
         "ofcPriorityCity": normalize_city(trigger.get("ofcPriorityCity", ofcCities[0] if ofcCities else "")),
         "ofcStartDate": trigger.get("ofcStartDate", ""),
@@ -117,9 +118,9 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
         }, '*');
     }""", config)
 
-    log.info("📨 Message sent to extension. Waiting for result (up to 120s) …")
+    log.info("📨 Message sent to extension. Waiting for result (up to 300s) …")
 
-    deadline = time.time() + 120
+    deadline = time.time() + 300
     while time.time() < deadline:
         if await check_for_page_limit(page, customerName, log):
             return False, {}
@@ -164,7 +165,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
 
         await asyncio.sleep(1)
 
-    log.error("⏱️ Timed out waiting for extension response (120s).")
+    log.error("⏱️ Timed out waiting for extension response (300s).")
     await page.evaluate("""
         if (window.__sniperResultListener) {
             window.removeEventListener('message', window.__sniperResultListener);
@@ -219,9 +220,9 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
         }, '*');
     }""", config)
 
-    log.info("📨 Reschedule message sent to extension. Waiting for result (up to 120s) …")
+    log.info("📨 Reschedule message sent to extension. Waiting for result (up to 300s) …")
 
-    deadline = time.time() + 120
+    deadline = time.time() + 300
     while time.time() < deadline:
         if await check_for_page_limit(page, customerName, log):
             return False
@@ -262,7 +263,7 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
 
         await asyncio.sleep(1)
 
-    log.error("⏱️ Timed out waiting for reschedule result (120s).")
+    log.error("⏱️ Timed out waiting for reschedule result (300s).")
     await page.evaluate("""
         if (window.__rescheduleResultListener) {
             window.removeEventListener('message', window.__rescheduleResultListener);
@@ -318,9 +319,9 @@ async def trigger_extension_sniper_consular_only(page: Page, trigger: dict, book
         }, '*');
     }""", {"config": config, "bookedOfcDate": bookedOfcDate})
 
-    log.info("📨 Consular-Only message sent to extension. Waiting for result (up to 120s) …")
+    log.info("📨 Consular-Only message sent to extension. Waiting for result (up to 300s) …")
 
-    deadline = time.time() + 120
+    deadline = time.time() + 300
     while time.time() < deadline:
         if await check_for_page_limit(page, customerName, log):
             return False, {}
@@ -365,7 +366,7 @@ async def trigger_extension_sniper_consular_only(page: Page, trigger: dict, book
 
         await asyncio.sleep(1)
 
-    log.error("⏱️ Timed out waiting for Consular-Only result (120s).")
+    log.error("⏱️ Timed out waiting for Consular-Only result (300s).")
     await page.evaluate("""
         if (window.__consularOnlyResultListener) {
             window.removeEventListener('message', window.__consularOnlyResultListener);

@@ -52,12 +52,13 @@ def format_slack_message(customer, chosen_ofc, chosen_consular, matched_ofc_city
             f"*OFC Slots Available:* {chosen_ofc['count']}",
         ]
 
-    lines += [
-        f"",
-        f"*Matched Consular City:* {matched_consular_city}",
-        f"*Consular Date:* {chosen_consular['display_date']}",
-        f"*Consular Slots Available:* {chosen_consular['count']}",
-    ]
+    if matched_consular_city and chosen_consular:
+        lines += [
+            f"",
+            f"*Matched Consular City:* {matched_consular_city}",
+            f"*Consular Date:* {chosen_consular['display_date']}",
+            f"*Consular Slots Available:* {chosen_consular['count']}",
+        ]
 
     return "\n".join(lines)
 

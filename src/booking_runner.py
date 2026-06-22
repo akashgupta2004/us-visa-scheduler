@@ -271,6 +271,7 @@ async def run(cdp_port: int, customer: str, username: str):
                     action_type = state.get("action_type")
 
                     trigger = {k: state[k] for k in [
+                        "action_type",
                         "ofcCities", "ofcPriorityCity", "ofcStartDate", "ofcEndDate",
                         "consularCities", "consularPriorityCity", "consularStartDate", "consularEndDate",
                         "customer_name", "prevent_immediate"
@@ -299,7 +300,7 @@ async def run(cdp_port: int, customer: str, username: str):
                     context = {}
                     try:
                         if action_type == "SNIPER":
-                            log.info("🎯 Action type: SNIPER (OFC+Consular booking)")
+                            log.info(f"🎯 Action type: {action_type}")
                             success, context = await trigger_extension_booking(page, trigger, log)
                         elif action_type == "SNIPER_CONSULAR_ONLY":
                             log.info("🎯 Action type: SNIPER_CONSULAR_ONLY (Fallback)")
@@ -327,13 +328,19 @@ async def run(cdp_port: int, customer: str, username: str):
                         if "Session expired" in str(e):
                             is_waiting = state.get("waitingForConsular", False)
                             if is_waiting:
-                                log.warning("Session expired during action, but ignoring recovery because we are in WAIT MODE.")
-                                context["waitingForConsular"] = True
-                                context["bookedOfcDate"] = state.get("bookedOfcDate")
+                                log.error("🚨 Session expired during Consular WAIT MODE. The server will drop the OFC booking. Abandoning wait mode and restarting full flow...")
+                                _update_state(state_file, {
+                                    "waitingForConsular": False,
+                                    "bookedOfcDate": None,
+                                    "waitStartTime": None
+                                })
+                                context["waitingForConsular"] = False
+                                context["bookedOfcDate"] = None
                             else:
                                 log.error("Session expired during action. Triggering recovery...")
-                                # Trigger recovery
-                                await recover_session(page, customer, username)
+                            
+                            # Trigger recovery for both cases
+                            await recover_session(page, customer, username)
 
                     if success:
                         log.info("=" * 60)
@@ -407,7 +414,8 @@ async def run(cdp_port: int, customer: str, username: str):
                         expired_flag = await page.evaluate("window._extensionSessionExpired || false")
                         if expired_flag:
                             if is_waiting:
-                                log.warning("🚨 Extension heartbeat detected session expiry, but ignoring recovery because we are in WAIT MODE.")
+                                log.warning("Extension heartbeat detected session expiry in WAIT MODE, ignoring as per preference.")
+                                await page.evaluate("window._extensionSessionExpired = false")
                             else:
                                 print("") # visual break
                                 log.warning("🚨 Extension heartbeat detected session expiry! Triggering recovery...")
@@ -429,10 +437,10 @@ async def run(cdp_port: int, customer: str, username: str):
                             "session has expired", "please sign in", "sign in to continue", "unauthorized"
                         ]):
                             if is_waiting:
-                                log.warning("⚠️ Silent session expiry detected from page content, but ignoring recovery because we are in WAIT MODE.")
+                                log.warning("Silent session expiry detected from page content in WAIT MODE, ignoring as per preference.")
                             else:
                                 print("") # visual break
-                                log.warning("⚠️ Silent session expiry detected from page content. Triggering recovery...")
+                                log.warning("🚨 Silent session expiry detected from page content! Triggering recovery...")
                                 success = await recover_session(page, customer, username)
                                 if not success:
                                     log.error("Recovery failed. Exiting to trigger orchestrator restart...")
@@ -448,10 +456,11 @@ async def run(cdp_port: int, customer: str, username: str):
                     cur_url = page.url.lower()
                     if any(k in cur_url for k in ["b2clogin", "logon", "login", "signin", "sign-in"]):
                         if is_waiting:
-                            log.warning("⚠️ Session expired — browser redirected to login page, but ignoring recovery because we are in WAIT MODE.")
+                            log.warning("Session expired (URL redirect) in WAIT MODE, ignoring as per preference.")
                         else:
                             print("") # visual break
                             log.warning("⚠️ Session expired — browser redirected to login page. Triggering recovery...")
+                            
                             success = await recover_session(page, customer, username)
                             if not success:
                                 log.error("Recovery failed. Exiting to trigger orchestrator restart...")

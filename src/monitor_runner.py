@@ -27,7 +27,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from src.monitor.api import fetch_rows
-from src.monitor.matcher import build_buckets, find_valid_pair, find_valid_consular_slot
+from src.monitor.matcher import build_buckets, find_valid_ofc_slot, find_valid_consular_slot
 from src.monitor.notifier import log_slots_for_analysis
 from src.common.utils import safe_id
 from src.common.config import ACCOUNTS_FILE, SLOT_ALERT_STATE_FILE, normalize_city, parse_date
@@ -37,8 +37,8 @@ from slack import format_slack_message, send_slack, send_slack_error
 ALERT_COOLDOWN_SECONDS = 15 * 60
 ERROR_BACKOFF_SECONDS = 40
 
-POLL_MIN_SECONDS = 15
-POLL_MAX_SECONDS = 20
+POLL_MIN_SECONDS = 5
+POLL_MAX_SECONDS = 15
 
 def load_state():
     if not SLOT_ALERT_STATE_FILE.exists():
@@ -319,28 +319,38 @@ def main():
 
                 else:
                     # ── Full Booking (SNIPER) path ─────────────────────────────────
-                    valid_pair, _, _, matched_ofc_city, matched_consular_city = find_valid_pair(
+                    ofc, matched_ofc_city = find_valid_ofc_slot(
                         ofc_buckets,
-                        consular_buckets,
                         customer["ofc_cities"],
-                        customer["consular_cities"],
                         effective_ofc_start,
                         customer["ofc_end"],
-                        effective_consular_start,
-                        customer["consular_end"],
                     )
 
-                    if not valid_pair:
+                    if not ofc:
                         continue
 
-                    ofc, consular = valid_pair
+                    consular_min_date = max(effective_consular_start, ofc["date"] + timedelta(days=1))
+                    consular, matched_consular_city = find_valid_consular_slot(
+                        consular_buckets,
+                        customer["consular_cities"],
+                        consular_min_date,
+                        customer["consular_end"],
+                    )
+                    
+                    if consular:
+                        action_type = "SNIPER"
+                        consular_desc = f"{matched_consular_city} {consular['display_date']} ({consular['count']} slots)"
+                    else:
+                        action_type = "SNIPER"
+                        consular_desc = "pending (wait mode)"
+                        matched_consular_city = customer["consular_cities"][0] if customer["consular_cities"] else ""
 
                     alert_key = make_alert_key(
                         uid,
                         matched_ofc_city,
-                        matched_consular_city,
+                        "",
                         ofc["display_date"],
-                        consular["display_date"],
+                        "",
                     )
 
                     if not should_alert(alert_key, state):
@@ -352,7 +362,7 @@ def main():
                             ofc,
                             consular,
                             matched_ofc_city,
-                            matched_consular_city,
+                            matched_consular_city if consular else None,
                         )
                     )
                     mark_alert(alert_key, state)
@@ -360,7 +370,7 @@ def main():
                     print(
                         f"✅ Alert sent for {customer_name} | "
                         f"OFC {matched_ofc_city} {ofc['display_date']} ({ofc['count']} slots) | "
-                        f"Consular {matched_consular_city} {consular['display_date']} ({consular['count']} slots)"
+                        f"Consular {consular_desc}"
                     )
 
                     # ── Signal bot2 to book immediately ────────────────────────
@@ -379,7 +389,7 @@ def main():
                         "extension_running": False,
                         "pending": True,
                         "trigger_timestamp": time.time(),
-                        "action_type": "SNIPER",
+                        "action_type": action_type,
                         "ofcCities": customer["ofc_cities"],
                         "ofcPriorityCity": matched_ofc_city,
                         "ofcStartDate": effective_ofc_start.strftime("%Y-%m-%d"),

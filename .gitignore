@@ -61,7 +61,7 @@ htmlcov/
 test_*.py
 launch.py
 test_profile*/
-*.png
+error_*.png
 state_*.json
 trigger_*.json
 

@@ -116,3 +116,20 @@ def find_valid_consular_slot(consular_buckets, consular_candidate_cities, consul
                 best_city = city
 
     return best_slot, best_city
+
+def find_valid_ofc_slot(ofc_buckets, ofc_candidate_cities, ofc_need_after, ofc_need_before):
+    """
+    Find the earliest valid standalone OFC slot.
+    Returns (best_slot, best_city) or (None, None) if nothing found.
+    """
+    best_slot = None
+    best_city = None
+
+    for city in ofc_candidate_cities:
+        rows = eligible_rows(ofc_buckets.get(city, []), ofc_need_after, ofc_need_before)
+        for slot in rows:
+            if best_slot is None or slot["date"] < best_slot["date"]:
+                best_slot = slot
+                best_city = city
+
+    return best_slot, best_city

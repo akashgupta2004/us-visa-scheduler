@@ -61,8 +61,8 @@ def ensure_chrome_debug_running(cdp_port: int, profile_dir: str, log: logging.Lo
         )
         sys.exit(1)
 
-    # Load the production build of the extension.
-    extension_path = str((Path(__file__).parent.parent.parent.parent / "leso-extension" / "build" / "chrome-mv3-prod").resolve())
+    # Load the production build of the extension from the local extension-build folder.
+    extension_path = str((Path(__file__).parent.parent.parent / "extension-build" / "chrome-mv3-prod").resolve())
     log.info(f"Using extension from: {extension_path}")
 
     subprocess.Popen([

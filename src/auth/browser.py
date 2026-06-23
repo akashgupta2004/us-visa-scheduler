@@ -32,12 +32,36 @@ def ensure_chrome_debug_running(cdp_port: int, profile_dir: str, log: logging.Lo
     # Delete the Sessions directory to prevent Chrome from restoring previous tabs.
     # We want a fresh 'about:blank' window each time.
     import shutil
-    sessions_dir = Path(profile_dir) / "Default" / "Sessions"
+    import json
+    
+    default_dir = Path(profile_dir) / "Default"
+    default_dir.mkdir(parents=True, exist_ok=True)
+    
+    sessions_dir = default_dir / "Sessions"
     if sessions_dir.exists():
         try:
             shutil.rmtree(sessions_dir)
         except Exception as e:
             log.warning(f"Failed to clear Sessions dir: {e}")
+
+    # Disable password saving prompt via Preferences file
+    prefs_file = default_dir / "Preferences"
+    try:
+        if prefs_file.exists():
+            with open(prefs_file, "r", encoding="utf-8") as f:
+                prefs = json.load(f)
+        else:
+            prefs = {}
+            
+        prefs["credentials_enable_service"] = False
+        if "profile" not in prefs:
+            prefs["profile"] = {}
+        prefs["profile"]["password_manager_enabled"] = False
+        
+        with open(prefs_file, "w", encoding="utf-8") as f:
+            json.dump(prefs, f)
+    except Exception as e:
+        log.warning(f"Could not disable password manager in preferences: {e}")
 
     chrome_exe = CHROME_EXE
     # First, try to find Playwright's bundled Chromium because standard Chrome

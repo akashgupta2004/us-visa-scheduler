@@ -19,8 +19,6 @@
 # =============================================================
 # """
 
-import json
-import os
 import subprocess
 import sys
 import time
@@ -112,12 +110,10 @@ def spawn_booking_runner(account: dict, cdp_port: int) -> subprocess.Popen:
     )
 
 
-def spawn_monitor(max_fetches: int | None = None) -> subprocess.Popen:
+def spawn_monitor() -> subprocess.Popen:
     """Launch the slot monitor in the background."""
     log("▶  Starting slot monitor …")
     cmd = [PYTHON, str(MONITOR_SCRIPT)]
-    if max_fetches:
-        cmd.extend(["--max-fetches", str(max_fetches)])
     return subprocess.Popen(
         cmd,
         stdin=subprocess.DEVNULL,
@@ -189,13 +185,10 @@ def stdin_listener(q: queue.Queue):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-monitor", action="store_true", help="Disable the slot monitor")
-    parser.add_argument("--max-fetches", type=int, default=None, help="Max number of times the monitor will fetch from the API")
     args = parser.parse_args()
 
     accounts = load_accounts()
     log(f"Loaded {len(accounts)} account(s) from accounts.json")
-    if args.max_fetches is not None:
-        log(f"API fetch limit set to: {args.max_fetches}")
 
     all_procs: list[subprocess.Popen] = []
     procs_lock = threading.Lock()
@@ -291,7 +284,7 @@ def main() -> None:
 
     # ── Start slot monitor ────────────────────────────────────
     if not args.no_monitor:
-        monitor_proc = spawn_monitor(args.max_fetches)
+        monitor_proc = spawn_monitor()
         with procs_lock:
             all_procs.append(monitor_proc)
         threading.Thread(

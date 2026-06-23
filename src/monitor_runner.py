@@ -11,15 +11,12 @@ import time
 import random
 import json
 import hashlib
-import os
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 
 # Force UTF-8 output so emojis don't crash on Windows when piped
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
-
-import argparse
 
 # Ensure project root is on the path for top-level imports (slack.py) and src.* packages
 _project_root = str(Path(__file__).resolve().parent.parent)
@@ -146,31 +143,15 @@ def _get_effective_dates(customer):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--max-fetches", type=int, default=None, help="Max number of times to fetch from API")
-    args = parser.parse_args()
-
-    max_fetches = args.max_fetches
-    fetches_count = 0
-
-    print(f"Running qualified slot monitor (interval ~{POLL_MIN_SECONDS}s, max_fetches={max_fetches if max_fetches else 'unlimited'})...")
+    print(f"Running qualified slot monitor (interval ~{POLL_MIN_SECONDS}s, unlimited fetches)...")
     state = load_state()
 
     while True:
         # Bug 7 fix: reload customers on every iteration to pick up GUI changes
         customers = load_customers()
-        if max_fetches is not None and fetches_count >= max_fetches:
-            msg = f"🛑 Reached maximum limit of {max_fetches} API fetches. Monitor stopping."
-            print(msg)
-            try:
-                send_slack_error(f"🛑 *Monitor Stopped*: Reached maximum limit of `{max_fetches}` API fetches. The bot is now idle and no longer checking for slots.")
-            except Exception as e:
-                print(f"Failed to send slack alert: {e}")
-            break
 
         try:
             rows = fetch_rows()
-            fetches_count += 1
             if not rows:
                 print("⚠️ API returned empty slot data (no rows). Monitor is still running, waiting for next poll...")
                 time.sleep(random.uniform(POLL_MIN_SECONDS, POLL_MAX_SECONDS))

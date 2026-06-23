@@ -6,7 +6,7 @@ import threading
 import tkinter as tk
 import shutil
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
 from tkcalendar import DateEntry
@@ -611,16 +611,8 @@ class App(tk.Tk):
         monitor_frame.pack(fill=tk.X, padx=10, pady=5)
         
         self.var_run_monitor = tk.BooleanVar(value=True)
-        self.var_max_fetches = tk.StringVar(value="")
-        
         self.chk_monitor = ttk.Checkbutton(monitor_frame, text=" Run Slot Monitor ", variable=self.var_run_monitor, style="Toolbutton")
         self.chk_monitor.pack(side=tk.LEFT, padx=15, pady=10)
-        
-        ttk.Label(monitor_frame, text="Max API Fetches (empty = unlimited):", style="Subhead.TLabel").pack(side=tk.LEFT, padx=(20, 5))
-        ent_max = tk.Entry(monitor_frame, textvariable=self.var_max_fetches, bg=ENTRY_BG, fg=ENTRY_FG, 
-                                font=("Segoe UI", 10), insertbackground=TEXT, borderwidth=0, highlightthickness=1, 
-                                highlightbackground=BORDER, width=8)
-        ent_max.pack(side=tk.LEFT, pady=10)
 
         self.bots_frame = ttk.Frame(self.tab_orchestrator, style="Surface.TFrame")
         self.bots_frame.pack(fill=tk.X, padx=10, pady=5)
@@ -701,15 +693,6 @@ class App(tk.Tk):
         
         if not self.var_run_monitor.get():
             cmd.append("--no-monitor")
-        else:
-            try:
-                max_fetches_val = self.var_max_fetches.get().strip()
-                if max_fetches_val:
-                    fetches = int(max_fetches_val)
-                    if fetches > 0:
-                        cmd.extend(["--max-fetches", str(fetches)])
-            except ValueError:
-                self._log("[GUI] Warning: Invalid max fetches. Using defaults.")
         
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"

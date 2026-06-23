@@ -47,7 +47,6 @@ from src.common.utils import safe_id
 from src.common.state import read_state as _read_state, write_state as _write_state, set_flag as _set_flag, update_state as _update_state
 from src.common.config import ACCOUNTS_FILE
 from slack import send_slack
-from slack import send_slack_error
 
 # Add new imports for recovery
 from src.auth.login import login, wait_for_waiting_room
@@ -183,7 +182,8 @@ async def run(cdp_port: int, customer: str, username: str):
         "waitStartTime": None
     })
 
-    last_polling_time = 0  # For the 12-minute delayed polling
+    last_polling_time = 0
+    next_poll_delay = random.randint(180, 240)
 
     async with async_playwright() as pw:
         browser, context, page = await connect_to_chrome(pw, cdp_port, log, handle_dialogs=True)
@@ -240,7 +240,6 @@ async def run(cdp_port: int, customer: str, username: str):
 
         runner_start_time = time.time()
         last_keep_alive = time.time()
-        last_activity_time = time.time()
 
         while True:
             try:
@@ -251,7 +250,6 @@ async def run(cdp_port: int, customer: str, username: str):
                     print("\n" + "=" * 60) # Visual break
                     # Mark extension as running before we start
                     _set_flag(state_file, extension_running=True, pending=False)
-                    last_activity_time = time.time()
                     log.info(f"📥 Pending trigger detected for '{customer}'.")
 
                     trigger_ts = state.get("trigger_timestamp")
@@ -340,7 +338,10 @@ async def run(cdp_port: int, customer: str, username: str):
                                 log.error("Session expired during action. Triggering recovery...")
                             
                             # Trigger recovery for both cases
-                            await recover_session(page, customer, username)
+                            success = await recover_session(page, customer, username)
+                            if not success:
+                                log.error("Recovery failed after action. Exiting to trigger orchestrator restart...")
+                                sys.exit(1)
 
                     if success:
                         log.info("=" * 60)
@@ -362,7 +363,7 @@ async def run(cdp_port: int, customer: str, username: str):
                             _update_state(state_file, {
                                 "waitingForConsular": True,
                                 "bookedOfcDate": context.get("bookedOfcDate"),
-                                "waitStartTime": state.get("waitStartTime", time.time()), # Preserve start time if already waiting
+                                "waitStartTime": state.get("waitStartTime") or time.time(), # Preserve start time if already waiting
                                 "extension_running": False,
                                 "pending": False
                             })
@@ -392,17 +393,18 @@ async def run(cdp_port: int, customer: str, username: str):
                 # ── Delayed Polling for Consular ──────────────────────────────
                 state = _read_state(state_file)
                 if state.get("waitingForConsular") and not state.get("pending"):
-                    wait_start = state.get("waitStartTime", time.time())
+                    wait_start = state.get("waitStartTime") or time.time()
                     elapsed = time.time() - wait_start
-                    # After 12 minutes (720 seconds), poll every 4 minutes (240 seconds)
-                    if elapsed > 720 and (time.time() - last_polling_time) > 240:
-                        log.info(f"⏱️ 12-minute wait exceeded ({elapsed:.0f}s elapsed). Triggering manual Consular poll.")
+                    # Poll continuously at random intervals between 3-4 minutes
+                    if (time.time() - last_polling_time) > next_poll_delay:
+                        log.info(f"⏱️ Periodic Consular poll ({elapsed:.0f}s elapsed in wait mode). Triggering manual check.")
                         _update_state(state_file, {
                             "pending": True,
                             "action_type": "SNIPER_CONSULAR_ONLY",
                             "trigger_timestamp": time.time()
                         })
                         last_polling_time = time.time()
+                        next_poll_delay = random.randint(180, 240)
                         continue
 
                 # ── Keep-alive & Content Health Check ──────────────────────
@@ -432,15 +434,17 @@ async def run(cdp_port: int, customer: str, username: str):
                             random.randint(100, 600),
                         )
                         # 2. Check for silent expiry where URL didn't change
-                        body_text = (await page.content()).lower()
-                        if any(phrase in body_text for phrase in [
+                        body_text = (await page.inner_text("body")).lower()
+                        matched_phrase = next((phrase for phrase in [
                             "session has expired", "please sign in", "sign in to continue", "unauthorized"
-                        ]):
+                        ] if phrase in body_text), None)
+                        
+                        if matched_phrase:
                             if is_waiting:
-                                log.warning("Silent session expiry detected from page content in WAIT MODE, ignoring as per preference.")
+                                log.warning(f"Silent session expiry detected ('{matched_phrase}') from page content in WAIT MODE, ignoring as per preference.")
                             else:
                                 print("") # visual break
-                                log.warning("🚨 Silent session expiry detected from page content! Triggering recovery...")
+                                log.warning(f"🚨 Silent session expiry detected ('{matched_phrase}') from page content! Triggering recovery...")
                                 success = await recover_session(page, customer, username)
                                 if not success:
                                     log.error("Recovery failed. Exiting to trigger orchestrator restart...")

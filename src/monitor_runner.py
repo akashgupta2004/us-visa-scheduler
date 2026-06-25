@@ -115,7 +115,8 @@ def load_customers():
             "ofc_end":         parse_date(ofc_end),
             "consular_start":  parse_date(consular_start),
             "consular_end":    parse_date(consular_end),
-            "prevent_immediate": entry.get("prevent_immediate", False)
+            "prevent_immediate": entry.get("prevent_immediate", False),
+            "multiPerson": entry.get("multiPerson", False)
         })
 
     return customers
@@ -233,6 +234,7 @@ def main():
                         "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
+                        "multiPerson": customer.get("multiPerson", False),
                     })
                     print(f"✅ Consular-Only trigger queued for '{customer_name}'.")
                     continue
@@ -295,6 +297,7 @@ def main():
                         "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
+                        "multiPerson": customer.get("multiPerson", False),
                     })
                     print(f"✅ Reschedule trigger queued for '{customer_name}'.")
 
@@ -381,6 +384,7 @@ def main():
                         "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
+                        "multiPerson": customer.get("multiPerson", False),
                     })
                     print(f"✅ Trigger queued for '{customer_name}' — booking runner will pick it up.")
 

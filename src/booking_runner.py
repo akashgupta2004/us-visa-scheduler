@@ -272,7 +272,7 @@ async def run(cdp_port: int, customer: str, username: str):
                         "action_type",
                         "ofcCities", "ofcPriorityCity", "ofcStartDate", "ofcEndDate",
                         "consularCities", "consularPriorityCity", "consularStartDate", "consularEndDate",
-                        "customer_name", "prevent_immediate"
+                        "customer_name", "prevent_immediate", "multiPerson"
                     ] if k in state}
 
                     # ── Re-navigate if needed ──────────────────────────────────
@@ -338,10 +338,18 @@ async def run(cdp_port: int, customer: str, username: str):
                                 log.error("Session expired during action. Triggering recovery...")
                             
                             # Trigger recovery for both cases
-                            success = await recover_session(page, customer, username)
-                            if not success:
+                            recovered = await recover_session(page, customer, username)
+                            if not recovered:
                                 log.error("Recovery failed after action. Exiting to trigger orchestrator restart...")
                                 sys.exit(1)
+                            else:
+                                if is_waiting:
+                                    log.info("Recovery successful! However, OFC slot is lost due to session expiry. Abandoning trigger.")
+                                    _update_state(state_file, {"extension_running": False})
+                                else:
+                                    log.info("Recovery successful! Re-queueing the trigger to retry the booking.")
+                                    _update_state(state_file, {"pending": True, "extension_running": False})
+                                continue
 
                     if success:
                         log.info("=" * 60)

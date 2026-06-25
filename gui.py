@@ -206,6 +206,7 @@ class App(tk.Tk):
         
         self.var_sync_consular = tk.BooleanVar(value=True)
         self.var_prevent_immediate = tk.BooleanVar(value=False)
+        self.var_multi_person = tk.BooleanVar(value=False)
         self.sq_rows = []
 
         self._build_form()
@@ -376,6 +377,10 @@ class App(tk.Tk):
         cb_prevent = ttk.Checkbutton(self.options_frame, text="Prevent Immediate Booking (Dynamically skips slots within 3 days of today)", 
                                  variable=self.var_prevent_immediate, style="Toolbutton")
         cb_prevent.pack(anchor="w", pady=5)
+        
+        cb_multiperson = ttk.Checkbutton(self.options_frame, text="Multi-Person Booking (Book for all dependent family members)", 
+                                 variable=self.var_multi_person, style="Toolbutton")
+        cb_multiperson.pack(anchor="w", pady=5)
 
         # Security Questions
         self.sq_main_frame = ttk.Frame(container, style="Surface.TFrame")
@@ -492,6 +497,7 @@ class App(tk.Tk):
             self.var_sync_consular.set(False)
 
         self.var_prevent_immediate.set(acc.get("prevent_immediate", False))
+        self.var_multi_person.set(acc.get("multiPerson", False))
 
         self._on_mode_change()
 
@@ -518,6 +524,7 @@ class App(tk.Tk):
         self.var_cons_end.set("2026-12-31")
         self.var_sync_consular.set(True)
         self.var_prevent_immediate.set(False)
+        self.var_multi_person.set(False)
         self._on_mode_change()
         self._clear_sq_rows()
         for _ in range(3): self._add_sq_row()
@@ -569,7 +576,8 @@ class App(tk.Tk):
             "consularStartDate": consular_start,
             "consularEndDate": consular_end,
             "security_questions": sq_dict,
-            "prevent_immediate": self.var_prevent_immediate.get()
+            "prevent_immediate": self.var_prevent_immediate.get(),
+            "multiPerson": self.var_multi_person.get()
         }
 
         if self.current_account_idx is not None:
@@ -821,6 +829,7 @@ class App(tk.Tk):
                 "action_type": action_type,
                 "customer_name": customer,
                 "prevent_immediate": acc.get("prevent_immediate", False),
+                "multiPerson": acc.get("multiPerson", False),
             }
             
             # Action specific data

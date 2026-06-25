@@ -92,6 +92,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
         "consularStartDate": trigger.get("consularStartDate", ""),
         "consularEndDate": trigger.get("consularEndDate", ""),
         "preventImmediateBooking": trigger.get("prevent_immediate", False),
+        "multiPerson": trigger.get("multiPerson", False),
     }
 
     log.info(f"🚀 Triggering extension booking for '{customerName}'")
@@ -195,6 +196,7 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
         "consularStartDate": trigger.get("consularStartDate", ""),
         "consularEndDate": trigger.get("consularEndDate", ""),
         "preventImmediateBooking": trigger.get("prevent_immediate", False),
+        "multiPerson": trigger.get("multiPerson", False),
     }
 
     log.info(f"📅 Triggering consular reschedule for '{customerName}'")
@@ -293,6 +295,7 @@ async def trigger_extension_sniper_consular_only(page: Page, trigger: dict, book
         "consularStartDate": trigger.get("consularStartDate", ""),
         "consularEndDate": trigger.get("consularEndDate", ""),
         "preventImmediateBooking": trigger.get("prevent_immediate", False),
+        "multiPerson": trigger.get("multiPerson", False),
     }
 
     log.info(f"🎯 Triggering Consular-Only Sniper for '{customerName}'")

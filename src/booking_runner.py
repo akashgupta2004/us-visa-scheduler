@@ -401,7 +401,9 @@ async def run(cdp_port: int, customer: str, username: str):
                 # ── Delayed Polling for Consular ──────────────────────────────
                 state = _read_state(state_file)
                 if state.get("waitingForConsular") and not state.get("pending"):
-                    wait_start = state.get("waitStartTime") or time.time()
+                    wait_start = state.get("waitStartTime")
+                    if wait_start is None:
+                        wait_start = time.time()
                     elapsed = time.time() - wait_start
                     # Poll continuously at random intervals between 3-4 minutes
                     if (time.time() - last_polling_time) > next_poll_delay:

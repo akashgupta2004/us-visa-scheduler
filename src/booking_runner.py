@@ -47,6 +47,7 @@ from src.common.utils import safe_id
 from src.common.state import read_state as _read_state, write_state as _write_state, set_flag as _set_flag, update_state as _update_state
 from src.common.config import ACCOUNTS_FILE
 from slack import send_slack
+from src.common.db_logger import MongoDBHandler, MongoDBLogger
 
 # Add new imports for recovery
 from src.auth.login import login, wait_for_waiting_room
@@ -59,9 +60,13 @@ POLL_INTERVAL = 0.5   # seconds between state file checks
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [BOOKING_RUNNER] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        MongoDBHandler()
+    ],
 )
 log = logging.getLogger("booking_runner")
+db_logger = MongoDBLogger()
 
 # ─── State file helpers (wrappers around shared state module) ─────────────────
 
@@ -206,6 +211,8 @@ async def run(cdp_port: int, customer: str, username: str):
                     else:
                         prefix = "[INFO]"
                     f.write(f"[{timestamp}] {prefix} [{customer}] {text}\n")
+                # Also write to MongoDB
+                db_logger.log_extension_console(timestamp, prefix, customer, text)
 
         page.on("console", handle_console)
 

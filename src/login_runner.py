@@ -23,6 +23,7 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 # Import modularized components
+from src.common.db_logger import MongoDBHandler
 from src.auth.browser import ensure_chrome_debug_running, connect_to_chrome
 from src.auth.login import wait_for_waiting_room, login
 from src.auth.security import handle_security_question
@@ -86,6 +87,10 @@ def _make_logger(customer: str) -> logging.Logger:
             f"%(asctime)s [{customer}] [%(levelname)s] %(message)s"
         ))
         logger.addHandler(handler)
+        
+        db_handler = MongoDBHandler()
+        logger.addHandler(db_handler)
+        
         logger.setLevel(logging.INFO)
         logger.propagate = False
     return logger

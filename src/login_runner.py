@@ -216,7 +216,7 @@ async def run() -> None:
                 
                 try:
                     log.info("Waiting for portal redirect after login...")
-                    await page.wait_for_url("**/*usvisascheduling.com/en-US*", timeout=30_000)
+                    await page.wait_for_url("**/*usvisascheduling.com/en-US*", timeout=120_000)
                 except Exception as e:
                     log.warning(f"Timeout waiting for portal redirect: {e}")
 

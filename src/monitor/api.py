@@ -22,8 +22,8 @@ _last_quota_alert: float = 0.0
 def fetch_rows() -> List[Dict]:
     global _last_quota_alert
     try:
-        # impersonate="chrome110" helps bypass AWS WAF challenges (HTTP 202)
-        response = requests.get(URL, headers=HEADERS, timeout=REQUEST_TIMEOUT, impersonate="chrome110")
+        # impersonate="chrome120" helps bypass AWS WAF challenges (HTTP 202)
+        response = requests.get(URL, headers=HEADERS, timeout=REQUEST_TIMEOUT, impersonate="chrome120")
 
         if response.status_code == 429:
             raise Exception("CheckVisaSlots Quota Exhausted! (Daily limit reached - HTTP 429)")

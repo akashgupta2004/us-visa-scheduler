@@ -5,3 +5,4 @@ requests>=2.31.0
 fastcaptcha-api
 curl_cffi>=0.7.0
 tkcalendar>=1.6.1
+pymongo>=4.6.0

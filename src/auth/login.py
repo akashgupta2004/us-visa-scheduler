@@ -25,6 +25,11 @@ async def wait_for_waiting_room(page: Page, log: logging.Logger, timeout_minutes
             log.error("🛑 Cloudflare WAF Block detected ('Sorry, you have been blocked'). Aborting waiting room!")
             raise Exception("Cloudflare WAF Hard Block")
             
+        # Fast-fail for Scheduled Maintenance
+        if "scheduled website outage" in html_lower or "website downtime is estimated" in html_lower or "website under maintenance" in title.lower():
+            log.error("🛑 U.S. Visa Scheduling Website is under scheduled maintenance. Aborting!")
+            raise Exception("Website Under Maintenance")
+            
         if any(kw in html_lower for kw in ["schedule appointment", "reschedule appointment", "cancel appointment"]):
             log.info("Home page keywords detected (e.g. Schedule Appointment). We are already logged in!")
             return

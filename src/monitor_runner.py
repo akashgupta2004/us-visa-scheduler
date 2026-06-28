@@ -227,7 +227,7 @@ def main():
                         "extension_running": False,
                         "pending": True,
                         "trigger_timestamp": time.time(),
-                        "action_type": "SNIPER_CONSULAR_ONLY",
+                        "action_type": "RESCHEDULE_FULL_CONSULAR_ONLY" if action_mode == "RESCHEDULE_FULL" else "SNIPER_CONSULAR_ONLY",
                         "consularCities": customer["consular_cities"],
                         "consularPriorityCity": matched_consular_city,
                         "consularStartDate": effective_consular_start.strftime("%Y-%m-%d"),
@@ -322,10 +322,10 @@ def main():
                     )
                     
                     if consular:
-                        action_type = "SNIPER"
+                        action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
                         consular_desc = f"{matched_consular_city} {consular['display_date']} ({consular['count']} slots)"
                     else:
-                        action_type = "SNIPER"
+                        action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
                         consular_desc = "pending (wait mode)"
                         matched_consular_city = customer["consular_cities"][0] if customer["consular_cities"] else ""
 

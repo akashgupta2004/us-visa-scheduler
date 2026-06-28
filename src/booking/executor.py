@@ -83,6 +83,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
 
     config = {
         "action_type": trigger.get("action_type", "SNIPER"),
+        "isReschedule": trigger.get("action_type") == "RESCHEDULE_FULL",
         "ofcCities": ofcCities,
         "ofcPriorityCity": normalize_city(trigger.get("ofcPriorityCity", ofcCities[0] if ofcCities else "")),
         "ofcStartDate": trigger.get("ofcStartDate", ""),
@@ -104,7 +105,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
         window.__sniperResult = null;
         window.__sniperResultListener = function(event) {
             if (event.source !== window) return;
-            if (event.data && event.data.action === 'SNIPER_BOOKING_RESULT') {
+            if (event.data && event.data.action === 'SNIPER_RESULT') {
                 window.__sniperResult = event.data;
                 window.removeEventListener('message', window.__sniperResultListener);
             }
@@ -114,7 +115,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
 
     await page.evaluate("""(config) => {
         window.postMessage({
-            action: 'EXECUTE_SNIPER_BOOKING',
+            action: 'EXECUTE_SNIPER',
             config: config
         }, '*');
     }""", config)
@@ -191,6 +192,7 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
     customerName = trigger.get("customer_name", "unknown")
 
     config = {
+        "isReschedule": True,
         "consularCities": consularCities,
         "consularPriorityCity": normalize_city(trigger.get("consularPriorityCity", consularCities[0] if consularCities else "")),
         "consularStartDate": trigger.get("consularStartDate", ""),
@@ -207,7 +209,7 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
         window.__rescheduleResult = null;
         window.__rescheduleResultListener = function(event) {
             if (event.source !== window) return;
-            if (event.data && event.data.action === 'CONSULAR_RESCHEDULE_RESULT') {
+            if (event.data && event.data.action === 'CONSULAR_STANDALONE_RESULT') {
                 window.__rescheduleResult = event.data;
                 window.removeEventListener('message', window.__rescheduleResultListener);
             }
@@ -217,7 +219,7 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
 
     await page.evaluate("""(config) => {
         window.postMessage({
-            action: 'EXECUTE_CONSULAR_RESCHEDULE',
+            action: 'EXECUTE_CONSULAR_STANDALONE',
             config: config
         }, '*');
     }""", config)
@@ -290,6 +292,7 @@ async def trigger_extension_sniper_consular_only(page: Page, trigger: dict, book
     customerName = trigger.get("customer_name", "unknown")
 
     config = {
+        "isReschedule": trigger.get("action_type") == "RESCHEDULE_FULL_CONSULAR_ONLY",
         "consularCities": consularCities,
         "consularPriorityCity": normalize_city(trigger.get("consularPriorityCity", consularCities[0] if consularCities else "")),
         "consularStartDate": trigger.get("consularStartDate", ""),

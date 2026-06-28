@@ -327,6 +327,9 @@ class App(tk.Tk):
         ttk.Radiobutton(radio_frame, text="Full Booking  (OFC Biometrics + Consular Interview)",
                         variable=self.var_action_mode, value="SNIPER",
                         style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, padx=(0, 20), pady=5)
+        ttk.Radiobutton(radio_frame, text="Full Reschedule (OFC + Consular)",
+                        variable=self.var_action_mode, value="RESCHEDULE_FULL",
+                        style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, padx=(0, 20), pady=5)
         ttk.Radiobutton(radio_frame, text="Consular Reschedule Only",
                         variable=self.var_action_mode, value="RESCHEDULE_CONSULAR",
                         style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, pady=5)
@@ -779,8 +782,9 @@ class App(tk.Tk):
                 btn_start_bot.pack(side=tk.RIGHT, padx=5)
             else:
                 action_mode = acc.get("action_mode", "SNIPER")
-                if action_mode == "SNIPER":
-                    btn_book = ttk.Button(row, text="⚡ Manual Book", style="Primary.TButton",
+                if action_mode in ("SNIPER", "RESCHEDULE_FULL"):
+                    btn_text = "⚡ Manual Book" if action_mode == "SNIPER" else "⚡ Manual Reschedule"
+                    btn_book = ttk.Button(row, text=btn_text, style="Primary.TButton",
                                           command=lambda u=uname: self._on_manual_book(u))
                     btn_book.pack(side=tk.LEFT, padx=5)
                 elif action_mode == "RESCHEDULE_CONSULAR":
@@ -833,7 +837,7 @@ class App(tk.Tk):
             }
             
             # Action specific data
-            if action_type == "SNIPER":
+            if action_type in ("SNIPER", "RESCHEDULE_FULL"):
                 updates.update({
                     "ofcCities": acc.get("ofcCities", []),
                     "ofcStartDate": acc.get("ofcStartDate", ""),

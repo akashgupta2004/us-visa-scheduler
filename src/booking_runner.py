@@ -307,8 +307,15 @@ async def run(cdp_port: int, customer: str, username: str):
                         if action_type == "SNIPER":
                             log.info(f"🎯 Action type: {action_type}")
                             success, context = await trigger_extension_booking(page, trigger, log)
+                        elif action_type == "RESCHEDULE_FULL":
+                            log.info(f"🔄 Action type: {action_type}")
+                            success, context = await trigger_extension_booking(page, trigger, log)
                         elif action_type == "SNIPER_CONSULAR_ONLY":
                             log.info("🎯 Action type: SNIPER_CONSULAR_ONLY (Fallback)")
+                            bookedOfcDate = state.get("bookedOfcDate", "")
+                            success, context = await trigger_extension_sniper_consular_only(page, trigger, bookedOfcDate, log)
+                        elif action_type == "RESCHEDULE_FULL_CONSULAR_ONLY":
+                            log.info("🔄 Action type: RESCHEDULE_FULL_CONSULAR_ONLY (Fallback)")
                             bookedOfcDate = state.get("bookedOfcDate", "")
                             success, context = await trigger_extension_sniper_consular_only(page, trigger, bookedOfcDate, log)
                         elif action_type == "RESCHEDULE_CONSULAR":

@@ -27,6 +27,9 @@ def fetch_rows() -> List[Dict]:
 
         if response.status_code == 429:
             raise Exception("CheckVisaSlots Quota Exhausted! (Daily limit reached - HTTP 429)")
+        elif response.status_code == 202:
+            print(f"⚠️ HTTP 202 Response. Likely AWS WAF Challenge. Ignoring and retrying on next cycle.")
+            return []
         elif response.status_code != 200:
             err_msg = f"HTTP {response.status_code} Response: {response.text[:200]}"
             print(f"⚠️ {err_msg}")

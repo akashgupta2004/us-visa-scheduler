@@ -64,7 +64,7 @@ class MongoDBLogger:
                 self._insert_batch(batch)
 
     def _insert_batch(self, batch):
-        if not self.collection:
+        if self.collection is None:
             return
         try:
             self.collection.insert_many(batch, ordered=False)

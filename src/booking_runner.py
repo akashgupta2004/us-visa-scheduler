@@ -44,7 +44,7 @@ from src.auth.browser import connect_to_chrome
 from src.booking.cdp_client import ensure_on_portal
 from src.booking.executor import trigger_extension_booking, trigger_extension_reschedule, trigger_extension_sniper_consular_only
 from src.common.utils import safe_id
-from src.common.state import read_state as _read_state, write_state as _write_state, set_flag as _set_flag, update_state as _update_state
+from src.common.state import read_state as _read_state, write_state as _write_state, update_state as _update_state
 from src.common.config import ACCOUNTS_FILE
 from slack import send_slack
 from src.common.db_logger import MongoDBHandler, MongoDBLogger
@@ -256,7 +256,7 @@ async def run(cdp_port: int, customer: str, username: str):
                 if state.get("pending"):
                     print("\n" + "=" * 60) # Visual break
                     # Mark extension as running before we start
-                    _set_flag(state_file, extension_running=True, pending=False)
+                    _update_state(state_file, {"extension_running": True, "pending": False})
                     log.info(f"📥 Pending trigger detected for '{customer}'.")
 
                     trigger_ts = state.get("trigger_timestamp")
@@ -370,11 +370,11 @@ async def run(cdp_port: int, customer: str, username: str):
                         log.info(f"✅ ACTION COMPLETED SUCCESSFULLY for '{customer}'! [{action_type}]")
                         log.info("=" * 60)
                         
-                        # Fully complete
                         _update_state(state_file, {
                             "waitingForConsular": False,
                             "bookedOfcDate": None,
-                            "waitStartTime": None
+                            "waitStartTime": None,
+                            "completed": True
                         })
                         send_slack(f"🎉 *BOOKING SUCCESSFUL* 🎉\n*Customer / ID:* `{customer}`\n*Type:* `{action_type}`\n✅ The appointment has been successfully scheduled!")
                     else:

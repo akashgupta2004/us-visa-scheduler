@@ -169,6 +169,9 @@ def main():
                 state_file = Path(__file__).parent / f"state_{uid}.json"
                 bot_state = _read_bot_state(state_file)
 
+                if bot_state.get("completed"):
+                    continue
+
                 # Compute effective dates without mutating the customer dict
                 # so original dates are preserved across poll cycles
                 effective_ofc_start, effective_consular_start = _get_effective_dates(customer)
@@ -215,6 +218,9 @@ def main():
                         f"✅ [FALLBACK] Alert sent for {customer_name} | "
                         f"Consular {matched_consular_city} {consular_slot['display_date']} ({consular_slot['count']} slots)"
                     )
+
+                    # Re-read bot state just in case it changed during Slack formatting
+                    bot_state = _read_bot_state(state_file)
 
                     if bot_state.get("extension_running"):
                         print(f"⏭️  Extension already running for '{customer_name}' — skipping.")

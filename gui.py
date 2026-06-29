@@ -324,12 +324,12 @@ class App(tk.Tk):
 
         radio_frame = ttk.Frame(mode_frame, style="Surface.TFrame")
         radio_frame.pack(fill=tk.X)
-        ttk.Radiobutton(radio_frame, text="Full Booking  (OFC Biometrics + Consular Interview)",
+        ttk.Radiobutton(radio_frame, text="Full Booking (OFC + Consular)",
                         variable=self.var_action_mode, value="SNIPER",
-                        style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, padx=(0, 20), pady=5)
+                        style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, padx=(0, 10), pady=5)
         ttk.Radiobutton(radio_frame, text="Full Reschedule (OFC + Consular)",
                         variable=self.var_action_mode, value="RESCHEDULE_FULL",
-                        style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, padx=(0, 20), pady=5)
+                        style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, padx=(0, 10), pady=5)
         ttk.Radiobutton(radio_frame, text="Consular Reschedule Only",
                         variable=self.var_action_mode, value="RESCHEDULE_CONSULAR",
                         style="Toolbutton", command=self._on_mode_change).pack(side=tk.LEFT, pady=5)
@@ -785,7 +785,7 @@ class App(tk.Tk):
                 if action_mode in ("SNIPER", "RESCHEDULE_FULL"):
                     btn_text = "⚡ Manual Book" if action_mode == "SNIPER" else "⚡ Manual Reschedule"
                     btn_book = ttk.Button(row, text=btn_text, style="Primary.TButton",
-                                          command=lambda u=uname: self._on_manual_book(u))
+                                          command=lambda u=uname, a=action_mode: self._on_manual_book(u, a))
                     btn_book.pack(side=tk.LEFT, padx=5)
                 elif action_mode == "RESCHEDULE_CONSULAR":
                     btn_reschedule = ttk.Button(row, text="📅 Consular Reschedule", style="Primary.TButton",
@@ -834,6 +834,7 @@ class App(tk.Tk):
                 "customer_name": customer,
                 "prevent_immediate": acc.get("prevent_immediate", False),
                 "multiPerson": acc.get("multiPerson", False),
+                "completed": False,
             }
             
             # Action specific data
@@ -878,6 +879,12 @@ class App(tk.Tk):
         acc, uid, customer = self._get_account_info(username)
         if not acc: return
 
+        state_path = BASE_DIR / "src" / f"state_{uid}.json"
+        try:
+            update_state(state_path, {"completed": False})
+        except Exception:
+            pass
+
         if self.orchestrator_proc and self.orchestrator_proc.stdin:
             try:
                 self.orchestrator_proc.stdin.write(f"START:{uid}\n")
@@ -890,8 +897,8 @@ class App(tk.Tk):
             self.closed_bots.remove(username)
         self._update_active_bots_list()
 
-    def _on_manual_book(self, username):
-        self._trigger_booking_action(username, "SNIPER")
+    def _on_manual_book(self, username, action_type="SNIPER"):
+        self._trigger_booking_action(username, action_type)
 
     def _on_consular_reschedule(self, username):
         self._trigger_booking_action(username, "RESCHEDULE_CONSULAR")

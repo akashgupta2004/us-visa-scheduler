@@ -135,8 +135,11 @@ def kill_chrome_by_port(cdp_port: int) -> None:
         )
         pid = None
         for line in result.stdout.splitlines():
-            if f":{cdp_port}" in line and "LISTENING" in line:
-                parts = line.split()
+            if "LISTENING" not in line:
+                continue
+            parts = line.split()
+            # parts[1] is the local address column, e.g. "127.0.0.1:9222"
+            if len(parts) >= 5 and parts[1].endswith(f":{cdp_port}"):
                 pid = parts[-1]
                 break
         if pid and pid.isdigit():

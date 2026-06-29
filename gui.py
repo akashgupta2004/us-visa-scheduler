@@ -625,6 +625,10 @@ class App(tk.Tk):
         self.chk_monitor = ttk.Checkbutton(monitor_frame, text=" Run Slot Monitor ", variable=self.var_run_monitor, style="Toolbutton")
         self.chk_monitor.pack(side=tk.LEFT, padx=15, pady=10)
 
+        self.var_enable_logging = tk.BooleanVar(value=True)
+        self.chk_logging = ttk.Checkbutton(monitor_frame, text=" Enable MongoDB Logging ", variable=self.var_enable_logging, style="Toolbutton", command=self._on_toggle_logging)
+        self.chk_logging.pack(side=tk.LEFT, padx=5, pady=10)
+
         self.bots_frame = ttk.Frame(self.tab_orchestrator, style="Surface.TFrame")
         self.bots_frame.pack(fill=tk.X, padx=10, pady=5)
 
@@ -650,6 +654,14 @@ class App(tk.Tk):
         self.txt_log.config(state=tk.DISABLED)
         
         self._update_active_bots_list()
+
+    def _on_toggle_logging(self):
+        try:
+            from src.common.db_logger import MongoDBLogger
+            logger = MongoDBLogger()
+            logger.toggle_logging(self.var_enable_logging.get())
+        except Exception as e:
+            self._log(f"Failed to toggle logging: {e}")
 
     def _log(self, text):
         self.txt_log.config(state=tk.NORMAL)

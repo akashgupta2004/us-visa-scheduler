@@ -403,7 +403,7 @@ async def run(cdp_port: int, customer: str, username: str):
                                 })
 
                     # Mark extension as done
-                    _set_flag(state_file, extension_running=False)
+                    _update_state(state_file, {"extension_running": False})
                     last_keep_alive = time.time()
                     
                     await asyncio.sleep(0.5)
@@ -502,11 +502,11 @@ async def run(cdp_port: int, customer: str, username: str):
                 break
             except Exception as e:
                 log.error(f"Unexpected error in watch loop: {e}", exc_info=True)
-                _set_flag(state_file, extension_running=False)
+                _update_state(state_file, {"extension_running": False})
                 await asyncio.sleep(5)
 
     # Cleanup on exit
-    _set_flag(state_file, extension_running=False, pending=False)
+    _update_state(state_file, {"extension_running": False, "pending": False})
 
 
 if __name__ == "__main__":

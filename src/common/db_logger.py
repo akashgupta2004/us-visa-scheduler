@@ -38,6 +38,8 @@ class MongoDBLogger:
             print(f"Failed to initialize MongoDB connection: {e}")
             self.collection = None
 
+        self.logging_enabled = True
+
         self.thread = threading.Thread(target=self._flush_thread, daemon=True)
         self.thread.start()
         atexit.register(self.flush)
@@ -72,6 +74,8 @@ class MongoDBLogger:
             print(f"Failed to insert logs to MongoDB: {e}")
 
     def log(self, record):
+        if not getattr(self, 'logging_enabled', True):
+            return
         doc = {
             "createdAt": datetime.now(timezone.utc),
             "level": record.levelname,
@@ -83,6 +87,8 @@ class MongoDBLogger:
         self.queue.put(doc)
         
     def log_extension_console(self, timestamp_str, level, customer, message):
+        if not getattr(self, 'logging_enabled', True):
+            return
         # Specific method for handling browser console logs directly
         try:
             # Parse timestamp if possible, otherwise use now
@@ -99,6 +105,9 @@ class MongoDBLogger:
             "customer": customer
         }
         self.queue.put(doc)
+
+    def toggle_logging(self, enable: bool):
+        self.logging_enabled = enable
 
     def flush(self):
         self.running = False

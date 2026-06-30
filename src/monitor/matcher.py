@@ -51,7 +51,7 @@ def build_buckets(rows):
 def eligible_rows(rows, need_after, need_before):
     return [
         row for row in rows
-        if need_after <= row["date"] <= need_before
+        if (not need_after or need_after <= row["date"]) and (not need_before or row["date"] <= need_before)
     ]
 
 def find_valid_pair(ofc_buckets, consular_buckets, ofc_candidate_cities, consular_candidate_cities, ofc_need_after, ofc_need_before, consular_need_after, consular_need_before):

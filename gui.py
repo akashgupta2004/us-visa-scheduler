@@ -121,8 +121,10 @@ class App(tk.Tk):
 
     def _save_accounts(self):
         try:
-            with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            tmp_file = ACCOUNTS_FILE.with_suffix(".tmp")
+            with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump(self.accounts, f, indent=2)
+            tmp_file.replace(ACCOUNTS_FILE)
             return True
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save accounts.json:\n{e}")

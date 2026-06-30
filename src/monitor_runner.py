@@ -148,7 +148,7 @@ def main():
     state = load_state()
 
     while True:
-        # Bug 7 fix: reload customers on every iteration to pick up GUI changes
+        # Reload customers on every iteration to pick up GUI changes
         customers = load_customers()
 
         try:
@@ -183,7 +183,10 @@ def main():
                         booked_date_obj = parse_date(booked_ofc_date_str)
                         if booked_date_obj:
                             # Consular date must be strictly after the OFC date
-                            effective_consular_start = max(effective_consular_start, booked_date_obj + timedelta(days=1))
+                            if effective_consular_start:
+                                effective_consular_start = max(effective_consular_start, booked_date_obj + timedelta(days=1))
+                            else:
+                                effective_consular_start = booked_date_obj + timedelta(days=1)
                             
                     consular_slot, matched_consular_city = find_valid_consular_slot(
                         consular_buckets,
@@ -236,8 +239,8 @@ def main():
                         "action_type": "RESCHEDULE_FULL_CONSULAR_ONLY" if action_mode == "RESCHEDULE_FULL" else "SNIPER_CONSULAR_ONLY",
                         "consularCities": customer["consular_cities"],
                         "consularPriorityCity": matched_consular_city,
-                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d"),
-                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
+                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d") if effective_consular_start else "",
+                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d") if customer["consular_end"] else "",
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
                         "multiPerson": customer.get("multiPerson", False),
@@ -299,8 +302,8 @@ def main():
                         "action_type": "RESCHEDULE_CONSULAR",
                         "consularCities": customer["consular_cities"],
                         "consularPriorityCity": matched_consular_city,
-                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d"),
-                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
+                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d") if effective_consular_start else "",
+                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d") if customer["consular_end"] else "",
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
                         "multiPerson": customer.get("multiPerson", False),
@@ -319,7 +322,7 @@ def main():
                     if not ofc:
                         continue
 
-                    consular_min_date = max(effective_consular_start, ofc["date"] + timedelta(days=1))
+                    consular_min_date = max(effective_consular_start, ofc["date"] + timedelta(days=1)) if effective_consular_start else ofc["date"] + timedelta(days=1)
                     consular, matched_consular_city = find_valid_consular_slot(
                         consular_buckets,
                         customer["consular_cities"],
@@ -382,12 +385,12 @@ def main():
                         "action_type": action_type,
                         "ofcCities": customer["ofc_cities"],
                         "ofcPriorityCity": matched_ofc_city,
-                        "ofcStartDate": effective_ofc_start.strftime("%Y-%m-%d"),
-                        "ofcEndDate": customer["ofc_end"].strftime("%Y-%m-%d"),
+                        "ofcStartDate": effective_ofc_start.strftime("%Y-%m-%d") if effective_ofc_start else "",
+                        "ofcEndDate": customer["ofc_end"].strftime("%Y-%m-%d") if customer["ofc_end"] else "",
                         "consularCities": customer["consular_cities"],
                         "consularPriorityCity": matched_consular_city,
-                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d"),
-                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d"),
+                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d") if effective_consular_start else "",
+                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d") if customer["consular_end"] else "",
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
                         "multiPerson": customer.get("multiPerson", False),

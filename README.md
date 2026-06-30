@@ -1,21 +1,21 @@
 # 🇺🇸 US Visa Appointment Auto-Booker
 
-An automated system that monitors US Visa appointment slots and books OFC (Offsite Facilitation Center) appointments instantly when availability is detected.
+An automated system that monitors US Visa appointment slots and books OFC (Offsite Facilitation Center) and Consular appointments instantly when availability is detected.
 
 ## 🏗️ Architecture
 
-The system is a **multi-process pipeline** managed by an orchestrator:
+The system is a **multi-process pipeline** managed by an orchestrator, working alongside a side-loaded Chrome extension to bypass bot detection and automate the booking process securely.
 
 ```
                         ┌───────────────────────┐
-                        │    orchestrator.py     │
-                        │  (Process Manager)     │
+                        │    orchestrator.py    │
+                        │  (Process Manager)    │
                         └───┬───────┬───────┬───┘
                             │       │       │
              ┌──────────────┘       │       └──────────────┐
              ▼                      ▼                      ▼
   ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
-  │  login_runner.py │   │ booking_runner.py │   │ monitor_runner.py│
+  │  login_runner.py │   │ booking_runner.py│   │ monitor_runner.py│
   │  (Chrome Login)  │   │  (Auto-Booker)   │   │  (Slot Watcher)  │
   └──────────────────┘   └──────────────────┘   └──────────────────┘
          │                       ▲                      │
@@ -29,10 +29,11 @@ The system is a **multi-process pipeline** managed by an orchestrator:
 
 | Component | Purpose |
 |---|---|
-| `orchestrator.py` | Manages all child processes, assigns CDP ports, handles auto-restart on crashes |
-| `login_runner.py` | Launches Chrome with remote debugging, logs in, handles CAPTCHA & security questions, keeps session alive |
-| `booking_runner.py` | Connects to authenticated Chrome, watches state files for triggers, delegates booking to browser extension |
-| `monitor_runner.py` | Polls the CheckVisaSlots API, matches slots against customer criteria, writes triggers and sends Slack alerts |
+| `orchestrator.py` | Manages all child processes, assigns unique CDP ports to Chrome instances, and handles auto-restarts on crashes. |
+| `login_runner.py` | Launches Playwright's Chromium browser with a custom side-loaded extension, logs in, handles CAPTCHA (FastCaptcha) & security questions, and keeps the session alive. |
+| `booking_runner.py` | Connects to the authenticated Chrome instance, watches local state files for triggers, and delegates booking to the browser extension. |
+| `monitor_runner.py` | Polls the CheckVisaSlots API, matches available slots against customer criteria, writes triggers to state files, and sends Slack alerts. |
+| `Browser Extension` | Built-in Chrome MV3 extension (`extension-build/`) injected automatically by Playwright to safely execute DOM interactions inside the page context without being flagged as an automated bot. |
 
 ## 📁 File Structure
 
@@ -45,6 +46,8 @@ bot/
 ├── .env                            # API keys & secrets (not committed)
 ├── .env.example                    # Template for .env
 ├── requirements.txt                # Python dependencies
+├── extension-build/                # Pre-built Chrome MV3 Extension
+│   └── chrome-mv3-prod/            # Production extension loaded by browser.py
 ├── src/
 │   ├── orchestrator.py             # Multi-account process manager
 │   ├── login_runner.py             # Chrome login & session keeper
@@ -70,94 +73,182 @@ bot/
 └── chrome_profile_*/               # Chrome user data (auto-created, not committed)
 ```
 
-## 🚀 Quick Start
+## 🚀 Setup & Installation
 
-### 1. Install Dependencies
+Follow these steps to get the system running on your local machine:
 
+### 1. Prerequisites
+- **Python 3.10+**: Make sure Python is installed and added to your system PATH.
+- **Git** (optional, to clone the repository).
+
+### 2. Set up a Virtual Environment (Recommended)
+It is highly recommended to use a virtual environment to manage dependencies.
 ```bash
+# Create a virtual environment
+python -m venv .venv
+
+# Activate the virtual environment (Windows)
+.venv\Scripts\activate
+
+# Activate the virtual environment (macOS/Linux)
+source .venv/bin/activate
+```
+
+### 3. Install Dependencies
+Install all required Python packages and the Playwright Chromium browser. Note: Standard Google Chrome is not used as it restricts side-loading extensions; Playwright's bundled Chromium is required.
+```bash
+# Install Python packages
 pip install -r requirements.txt
+
+# Install Playwright's custom Chromium browser
 playwright install chromium
 ```
 
-### 2. Configure Environment
-
-Copy `.env.example` to `.env` and fill in your credentials:
-
-```env
-FASTCAPTCHA_API_KEY=your_api_key
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
-```
-
-### 3. Configure Customer Criteria
-
-Edit `accounts.json` or use `gui.py` to manage your customers and booking criteria.
-A customer record should include:
-
-```json
-{
-  "customer_name": "your_name",
-  "username": "your_email_or_username",
-  "password": "your_password",
-  "ofcCities": ["HYDERABAD"],
-  "ofcStartDate": "2026-01-01",
-  "ofcEndDate": "2026-12-31",
-  "consularCities": ["HYDERABAD"],
-  "consularStartDate": "2026-01-01",
-  "consularEndDate": "2026-12-31",
-  "security_questions": {
-    "food": "YourAnswer"
-  }
-}
-```
-
-**Supported cities:** `CHENNAI`, `HYDERABAD`, `MUMBAI`, `DELHI`, `KOLKATA` (or `ANY`)
-
-### 5. Run the System
-
-**Option A — Single command (recommended):**
-
+### 4. Configure Environment Variables
+Copy the template environment file and fill in your secrets:
 ```bash
-python main.py
+# Copy the template
+cp .env.example .env
 ```
+Open `.env` and configure:
+- `FASTCAPTCHA_API_KEY`: Get a free API key at [FastCaptcha](https://fastcaptcha.org/accounts/signup/) to automatically solve CAPTCHAs during login.
+- `SLACK_WEBHOOK_URL` (Optional): Setup an incoming webhook on Slack to get notified when slots are found.
 
-The orchestrator will launch Chrome, log in, start booking runners, and monitor slots for **all accounts** in `accounts.json` automatically.
+### 5. Configure Customer Accounts
+The easiest way to configure accounts and criteria is to use the provided GUI dashboard.
+```bash
+python gui.py
+```
+From the GUI:
+1. Go to the **Accounts Manager** tab.
+2. Click **Add New Account**.
+3. Fill in the credentials, target cities, date ranges, and security questions.
+4. Click **Save Changes**. This will automatically generate or update your `accounts.json` file.
 
-**Option B — Use the GUI dashboard:**
+Alternatively, you can manually create an `accounts.json` file in the root directory (refer to the "Manual Configuration" section below).
 
+## 🎮 Running the System
+
+You have two options to run the orchestrator:
+
+### Option A: Using the GUI Dashboard (Recommended)
+The GUI provides a unified dashboard with start/stop controls, per-account management, and a live log streaming interface.
 ```bash
 python gui.py
 ```
 
-This provides a unified dashboard with start/stop controls, per-account management, and live log streaming.
+**Step-by-Step GUI Guide:**
+
+1. **Adding an Account (Accounts Manager Tab)**
+   - Open the **Accounts Manager** tab.
+   - Click the **Add New Account** button on the left sidebar.
+   - Fill in your **Customer Name**, **Username/Email**, and **Password**.
+   - Select your **Account Mode** (e.g., `Full Booking (OFC + Consular)`, `Full Reschedule`, etc.).
+   - Choose your **Target Cities** for both OFC and Consular by clicking the pill buttons. You can use the "Keep Consular Location & Dates identical to OFC" checkbox for convenience.
+   - Set the **Start Date** and **End Date** for acceptable slots using the calendar dropdowns.
+   - Add your **Security Questions** (keyword and answer pairs).
+   - Click **Save Changes** at the bottom. Your account will appear in the left listbox.
+
+2. **Managing Accounts**
+   - Click on any account in the left sidebar to load its configuration into the form.
+   - Make edits and click **Save Changes**, or click **Delete** to remove the account permanently.
+
+3. **Running the Bots (Orchestrator Control Tab)**
+   - Switch to the **Orchestrator Control** tab.
+   - Use the checkboxes to optionally disable the **Slot Monitor** or **MongoDB Logging**.
+   - Click the green **▶ Start All Bots** button to launch the orchestrator.
+   - The bots will launch in the background. The **Active Accounts** list will populate, allowing you to selectively **START** or **STOP** individual accounts on the fly without stopping the entire system.
+   - Watch the **Live Output** console at the bottom for real-time logs. Check the **Auto-scroll** box to follow the latest updates.
+   - When finished, click the red **⏹ Stop All** button to gracefully shut down Chrome and all background processes.
+
+### Option B: Using the CLI
+If you prefer running headlessly or deploying on a server, run the orchestrator directly from the command line:
+```bash
+# Run for all accounts in accounts.json
+python main.py
+
+# Run without the slot monitor (if you want to trigger bookings manually)
+python main.py --no-monitor
+```
 
 ## ⚙️ How It Works
 
-1. **`orchestrator.py`** reads `accounts.json` and for each account assigns a unique Chrome CDP port (9222, 9223, …). It spawns `login_runner.py` and, once login succeeds, `booking_runner.py`. It also starts a single `monitor_runner.py` instance.
+1. **Initialization:** The orchestrator reads `accounts.json` and assigns a unique Chrome CDP port (e.g., 9222, 9223) to each account.
+2. **Login & Session Keeper:** It spawns `login_runner.py` which opens Playwright's Chromium browser, side-loads the custom Chrome extension, navigates the Cloudflare waiting room, logs in, solves CAPTCHAs via FastCaptcha, and answers security questions. The browser remains open to keep the session alive.
+3. **Standby Booking Watcher:** Once logged in, `booking_runner.py` connects to the exact same Chrome instance via CDP. It parks on the scheduling portal and polls `state_<customer>.json` every 0.5 seconds for action triggers.
+4. **Slot Monitoring:** Concurrently, `monitor_runner.py` polls the CheckVisaSlots API every 15-20 seconds in the background. It looks for OFC + Consular date pairs that match the customer's strict criteria.
+5. **Execution:** When the monitor finds a matching slot, it:
+   - Sends a Slack notification.
+   - Writes a trigger payload into `state_<customer>.json`.
+6. **Auto-Booking:** `booking_runner.py` detects the file change and delegates the booking instruction to the side-loaded browser extension via `postMessage`. The extension then securely takes over and completes the booking process.
 
-2. **`login_runner.py`** opens Chrome with `--remote-debugging-port`, navigates to the visa scheduling site, handles Cloudflare waiting rooms, logs in with your credentials, solves CAPTCHAs, and answers security questions. It then keeps the browser session open.
+## 🔄 Booking Flows
 
-3. **`booking_runner.py`** connects to the same Chrome via CDP, navigates to the portal, and polls `state_<customer>.json` every 0.5 seconds while keeping the session alive with mouse movements. When a trigger is detected, it delegates booking to the browser extension via `postMessage`.
+The system supports several dynamic action modes depending on your current appointment status. The orchestrator triggers these flows based on the `action_mode` set in your account configuration:
 
-4. **`monitor_runner.py`** polls the CheckVisaSlots API every 15–20 seconds, looking for OFC + Consular date pairs that match your criteria (city and date range). When a match is found, it:
-   - Sends a Slack notification
-   - Writes a trigger to `state_<customer>.json`
+1. **Full Booking (`SNIPER`)** 
+   - **Use Case:** For users who do not have any existing appointments.
+   - **Behavior:** The bot automatically books the OFC (biometrics) appointment and then seamlessly proceeds to book the Consular interview back-to-back.
+2. **Full Reschedule (`RESCHEDULE_FULL`)**
+   - **Use Case:** For users who already have both OFC and Consular appointments booked but want to find earlier/better dates.
+   - **Behavior:** Identical to the `SNIPER` flow, but explicitly targets rescheduling to overwrite your existing appointments.
+3. **Consular Reschedule Only (`RESCHEDULE_CONSULAR`)**
+   - **Use Case:** For users who have already attended their OFC appointment (or want to keep it) and strictly want to reschedule their Consular interview to an earlier date.
+   - **Behavior:** Bypasses the OFC selection entirely and only monitors/books the Consular calendar.
+4. **Consular Wait Mode (Fallback Flow)**
+   - **Use Case:** Handled automatically if the system successfully secures an OFC slot but the corresponding Consular slot gets snatched by someone else before the bot can secure it.
+   - **Behavior:** Instead of failing, the bot enters a persistent "Wait Mode". It keeps the browser session alive by performing mouse movements every 30 seconds to prevent idle timeouts. 
+   - **Timings:** While in Wait Mode, the bot triggers a direct Consular booking attempt (`SNIPER_CONSULAR_ONLY` or `RESCHEDULE_FULL_CONSULAR_ONLY`) at randomized intervals between **180 and 240 seconds (3 to 4 minutes)**. It continuously polls the calendar this way to strictly find a Consular date that matches the secured OFC date until it successfully finishes the booking. If the server drops the held OFC appointment due to a hard session expiry, it abandons Wait Mode and restarts the full flow.
 
-5. **`booking_runner.py` detects the trigger** and immediately sends a message to the browser extension, which:
-   - Selects the city from the dropdown
-   - Navigates the calendar to the target month
-   - Clicks the available date
-   - Selects a time slot and submits
+## ⏱️ System Timings & Thresholds
 
-## 🔧 Configuration
+The system is configured with several delays, timeouts, and polling intervals to mimic human behavior and comply with API limits:
 
-### Slot Monitor Timing (in `src/monitor_runner.py`)
+- **CheckVisaSlots API Polling (`monitor_runner.py`)**: Randomly polls between **5 to 15 seconds** (`POLL_MIN_SECONDS` / `POLL_MAX_SECONDS`).
+- **Slack Alert Cooldown**: Identical duplicate alerts are suppressed for **15 minutes** (`ALERT_COOLDOWN_SECONDS`) to avoid spamming.
+- **API Error Backoff**: If the slot polling API throws an error, the monitor backs off for **40 seconds** (`ERROR_BACKOFF_SECONDS`) before retrying.
+- **State File Polling (`booking_runner.py`)**: The booking runner checks the local `state_<customer>.json` file every **0.5 seconds** (`POLL_INTERVAL`) for near-instant trigger response.
+- **Waiting Room Timeout (`auth/login.py`)**: The bot will wait up to **120 minutes** if placed in a Cloudflare waiting room queue.
+- **Login Timeout (`orchestrator.py`)**: The orchestrator allows up to **10 minutes** for the login runner to successfully authenticate before giving up.
+- **Rate Limit (429) Handling**: If the booking portal throws a "429 Too Many Requests" error, the orchestrator automatically puts that account on cooldown and restarts it after **45 minutes**.
+- **Crash Loop Prevention**: If any bot crashes more than 3 times within **5 minutes** (300 seconds), the orchestrator pauses for **60 seconds** before attempting another restart.
 
-```python
-POLL_MIN_SECONDS = 15       # Min seconds between API polls
-POLL_MAX_SECONDS = 20       # Max seconds between API polls
-ALERT_COOLDOWN_SECONDS = 900  # 15 min cooldown between duplicate alerts
+## 📝 Manual Configuration (Advanced)
+
+
+If you prefer not to use the GUI, create an `accounts.json` file manually in the root folder with the following schema:
+```json
+[
+  {
+    "customer_name": "John Doe",
+    "username": "your_email@example.com",
+    "password": "your_password",
+    "action_mode": "SNIPER",
+    "ofcCities": ["HYDERABAD", "CHENNAI"],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-12-31",
+    "consularCities": ["HYDERABAD", "CHENNAI"],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-12-31",
+    "security_questions": {
+      "food": "Pizza",
+      "city": "New York"
+    },
+    "prevent_immediate": true,
+    "multiPerson": false
+  }
+]
 ```
+
+### Field Explanations:
+- `action_mode`: Defines the booking flow (`SNIPER`, `RESCHEDULE_FULL`, or `RESCHEDULE_CONSULAR`).
+- `ofcCities` & `consularCities`: Arrays of cities you want to target (e.g., `"HYDERABAD"`, `"CHENNAI"`, `"MUMBAI"`, `"DELHI"`, `"KOLKATA"`).
+- `ofcStartDate` / `ofcEndDate`: The date range for acceptable OFC (biometrics) slots (Format: `YYYY-MM-DD`).
+- `consularStartDate` / `consularEndDate`: The date range for acceptable Consular interview slots (Format: `YYYY-MM-DD`).
+- `security_questions`: Key-value pairs matching a substring of the question and its answer. For example, if the question asks for your favorite food, use `"food": "Pizza"`.
+- `prevent_immediate`: `true` or `false`. If true, the bot dynamically ignores any slots available within the next 3 days from the current date (useful if you cannot arrange travel on short notice).
+- `multiPerson`: `true` or `false`. Set to true if the account has dependents/family members attached so the bot books for the whole group.
 
 ## ⚠️ Disclaimer
 
-This tool is for educational purposes only. Use it responsibly and in accordance with the terms of service of the visa scheduling platform.
+This tool is for educational and research purposes only. Use it responsibly and in accordance with the terms of service of the visa scheduling platform. The developers are not responsible for any bans or issues arising from the use of this software.

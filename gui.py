@@ -634,8 +634,33 @@ class App(tk.Tk):
 
         ttk.Label(self.bots_frame, text="Active Accounts:", style="Subhead.TLabel").pack(side=tk.TOP, anchor=tk.W, padx=15, pady=5)
         
-        self.bots_inner_frame = ttk.Frame(self.bots_frame, style="Surface.TFrame")
-        self.bots_inner_frame.pack(fill=tk.X, padx=15, pady=5)
+        self.bots_canvas = tk.Canvas(self.bots_frame, bg=SURFACE, highlightthickness=0, height=200)
+        self.bots_scrollbar = ttk.Scrollbar(self.bots_frame, orient="vertical", command=self.bots_canvas.yview)
+        self.bots_inner_frame = ttk.Frame(self.bots_canvas, style="Surface.TFrame")
+
+        self.bots_inner_frame.bind(
+            "<Configure>",
+            lambda e: self.bots_canvas.configure(
+                scrollregion=self.bots_canvas.bbox("all")
+            )
+        )
+
+        self.bots_canvas_window = self.bots_canvas.create_window((0, 0), window=self.bots_inner_frame, anchor="nw")
+        
+        def _on_bots_canvas_configure(event):
+            self.bots_canvas.itemconfig(self.bots_canvas_window, width=event.width)
+            
+        self.bots_canvas.bind("<Configure>", _on_bots_canvas_configure)
+        self.bots_canvas.configure(yscrollcommand=self.bots_scrollbar.set)
+
+        self.bots_canvas.pack(side="left", fill="both", expand=True, padx=(15, 0), pady=5)
+        self.bots_scrollbar.pack(side="right", fill="y", padx=(0, 15), pady=5)
+
+        def _on_mousewheel_bots(event):
+            self.bots_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+        self.bots_canvas.bind("<Enter>", lambda e: self.bots_canvas.bind_all("<MouseWheel>", _on_mousewheel_bots))
+        self.bots_canvas.bind("<Leave>", lambda e: self.bots_canvas.unbind_all("<MouseWheel>"))
 
         log_frame = ttk.Frame(self.tab_orchestrator, style="Surface.TFrame")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 10))

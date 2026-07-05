@@ -221,7 +221,15 @@ async def run() -> None:
                 
                 try:
                     log.info("Waiting for portal redirect after login...")
-                    await page.wait_for_url("**/*usvisascheduling.com/en-US*", timeout=120_000)
+                    deadline = time.time() + 120
+                    while time.time() < deadline:
+                        if "/en-us" in page.url.lower():
+                            log.info(f"Arrived at portal: {page.url}")
+                            break
+                        
+                        # Cloudflare can intercept the intermediate redirect (e.g. signin-aad-b2c_1)
+                        await wait_for_waiting_room(page, log, timeout_minutes=1)
+                        await asyncio.sleep(2)
                 except Exception as e:
                     log.warning(f"Timeout waiting for portal redirect: {e}")
 

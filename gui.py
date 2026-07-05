@@ -50,6 +50,7 @@ class App(tk.Tk):
         self.closed_bots: set = set()
         self.current_account_idx = None
         self.orchestrator_proc = None
+        self.polling_proc = None
 
         self._configure_styles()
         self._load_accounts()
@@ -137,12 +138,15 @@ class App(tk.Tk):
         # Tabs
         self.tab_accounts = ttk.Frame(self.notebook, style="TFrame")
         self.tab_orchestrator = ttk.Frame(self.notebook, style="TFrame")
+        self.tab_polling = ttk.Frame(self.notebook, style="TFrame")
 
         self.notebook.add(self.tab_accounts, text="  Accounts Manager  ")
         self.notebook.add(self.tab_orchestrator, text="  Orchestrator Control  ")
+        self.notebook.add(self.tab_polling, text="  Polling Control  ")
 
         self._build_accounts_tab()
         self._build_orchestrator_tab()
+        self._build_polling_tab()
 
     # ─── Accounts Tab ────────────────────────────────────────────────────────
 
@@ -767,7 +771,12 @@ class App(tk.Tk):
         try:
             for line in iter(self.orchestrator_proc.stdout.readline, ''):
                 if line:
-                    self.after(0, self._log, line.rstrip())
+                    text = line.rstrip()
+                    if "[POLLING-RESULT]" in text:
+                        clean_text = text.split("[POLLING-RESULT]")[-1].strip()
+                        self.after(0, self._log_poll, f"[Background Poll] {clean_text}")
+                    else:
+                        self.after(0, self._log, text)
         except Exception:
             pass
         self.after(0, self._on_orchestrator_exit)
@@ -941,6 +950,74 @@ class App(tk.Tk):
 
     def _on_consular_reschedule(self, username):
         self._trigger_booking_action(username, "RESCHEDULE_CONSULAR")
+
+    def _build_polling_tab(self):
+        top_frame = ttk.Frame(self.tab_polling, style="Surface.TFrame")
+        top_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        ttk.Label(top_frame, text="Polling Control", style="Header.TLabel").pack(side=tk.LEFT, padx=15, pady=15)
+
+        self.btn_start_poll = ttk.Button(top_frame, text="▶ Start Polling", style="Success.TButton", command=self._start_polling)
+        self.btn_start_poll.pack(side=tk.RIGHT, padx=15)
+
+        self.btn_stop_poll = ttk.Button(top_frame, text="⏹ Stop Polling", style="Danger.TButton", command=self._stop_polling)
+        self.btn_stop_poll.pack(side=tk.RIGHT, padx=5)
+        self.btn_stop_poll.state(["disabled"])
+
+        settings_frame = ttk.Frame(self.tab_polling, style="Surface.TFrame")
+        settings_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        ttk.Label(settings_frame, text="Cooldown (minutes):").pack(side=tk.LEFT, padx=(15, 5), pady=10)
+        self.var_cooldown = tk.StringVar(value="60")
+        ttk.Entry(settings_frame, textvariable=self.var_cooldown, width=5).pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(settings_frame, text="Gap (minutes):").pack(side=tk.LEFT, padx=(15, 5), pady=10)
+        self.var_gap = tk.StringVar(value="15")
+        ttk.Entry(settings_frame, textvariable=self.var_gap, width=5).pack(side=tk.LEFT, padx=5)
+
+        log_frame = ttk.Frame(self.tab_polling, style="Surface.TFrame")
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 10))
+
+        ttk.Label(log_frame, text="Polling Logs", style="Subhead.TLabel").pack(side=tk.TOP, anchor=tk.W, padx=15, pady=(10, 5))
+
+        self.txt_poll_log = scrolledtext.ScrolledText(log_frame, bg="#0f172a", fg="#3b82f6", font=("Consolas", 10), borderwidth=0, highlightthickness=0)
+        self.txt_poll_log.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+        self.txt_poll_log.config(state=tk.DISABLED)
+
+    def _log_poll(self, text):
+        self.txt_poll_log.config(state=tk.NORMAL)
+        self.txt_poll_log.insert(tk.END, text + "\n")
+        self.txt_poll_log.see(tk.END)
+        self.txt_poll_log.config(state=tk.DISABLED)
+
+    def _start_polling(self):
+        self.btn_start_poll.state(["disabled"])
+        self.btn_stop_poll.state(["!disabled"])
+        
+        state_path = BASE_DIR / "src" / "polling_state.json"
+        
+        try:
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "is_active": True,
+                    "cooldown": int(self.var_cooldown.get()),
+                    "gap": int(self.var_gap.get())
+                }, f)
+            self._log_poll(f"[GUI] ✅ Polling activated. Cooldown={self.var_cooldown.get()}min, Gap={self.var_gap.get()}min. Waiting for first poll cycle...")
+        except Exception as e:
+            self._log_poll(f"[GUI] ❌ Error activating polling: {e}")
+
+    def _stop_polling(self):
+        self.btn_stop_poll.state(["disabled"])
+        self.btn_start_poll.state(["!disabled"])
+        
+        state_path = BASE_DIR / "src" / "polling_state.json"
+        try:
+            with open(state_path, "w", encoding="utf-8") as f:
+                json.dump({"is_active": False}, f)
+            self._log_poll("[GUI] 🛑 Polling deactivated. In-session polling stopped.")
+        except Exception as e:
+            self._log_poll(f"[GUI] ❌ Error stopping polling: {e}")
 
     def destroy(self):
         if self.orchestrator_proc:

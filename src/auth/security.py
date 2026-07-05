@@ -57,11 +57,18 @@ async def handle_security_question(page: Page, username: str, log: logging.Logge
             if is_question and line not in questions:
                 questions.append(line)
         
+        # Get all visible inputs
+        visible_inputs = []
         for i in range(count):
-            input_loc = inputs.nth(i)
-            if not await input_loc.is_visible():
-                continue
+            loc = inputs.nth(i)
+            if await loc.is_visible():
+                visible_inputs.append(loc)
                 
+        # If there are extra visible inputs (like a search bar), align from the end
+        if len(visible_inputs) > len(questions) and len(questions) > 0:
+            visible_inputs = visible_inputs[-len(questions):]
+            
+        for i, input_loc in enumerate(visible_inputs):
             if i < len(questions):
                 textToMatch = questions[i]
                 answer = match_answer(textToMatch, answers)

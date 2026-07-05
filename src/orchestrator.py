@@ -453,16 +453,17 @@ def main() -> None:
             with procs_lock:
                 all_procs[:] = [p for p in all_procs if p.poll() is None]
 
-            # ── Auto-restart monitor_runner if it crashes ──────
-            if not args.no_monitor:
-                mp = monitor_state["proc"]
-                if mp is not None and mp.poll() is not None:
-                    log("⚠️  monitor_runner crashed — restarting …")
-                    new_mp = spawn_monitor()
-                    monitor_state["proc"] = new_mp
+            # ── Check if monitor crashed ──────────────────────────
+            if not args.no_monitor and monitor_state["proc"] is not None:
+                ret = monitor_state["proc"].poll()
+                if ret is not None:
+                    log(f"⚠️  Slot monitor crashed (code {ret}). Restarting in 5s …")
+                    time.sleep(5)
+                    mp = spawn_monitor()
+                    monitor_state["proc"] = mp
                     with procs_lock:
-                        all_procs.append(new_mp)
-                    threading.Thread(target=relay_output, args=(new_mp, "monitor"), daemon=True).start()
+                        all_procs.append(mp)
+                    threading.Thread(target=relay_output, args=(mp, "monitor"), daemon=True).start()
 
             # ── Health-check each bot session ─────────────────────────
             for session in sessions:

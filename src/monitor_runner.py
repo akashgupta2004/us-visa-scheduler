@@ -34,7 +34,7 @@ from slack import format_slack_message, send_slack, send_slack_error
 ALERT_COOLDOWN_SECONDS = 15 * 60
 ERROR_BACKOFF_SECONDS = 40
 
-POLL_MIN_SECONDS = 5
+POLL_MIN_SECONDS = 10
 POLL_MAX_SECONDS = 15
 
 def load_state():

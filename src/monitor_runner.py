@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 
-# Force UTF-8 output so emojis don't crash on Windows when piped
+# Force UTF-8 output so emojis don't crash on Windows when piped utf 16
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 # Ensure project root is on the path for top-level imports (slack.py) and src.* packages

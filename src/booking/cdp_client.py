@@ -54,3 +54,4 @@ async def ensure_on_portal(page: Page, log: logging.Logger, timeout_seconds: int
 
     log.error(f"Timed out waiting for portal. Last URL: {page.url}")
     return False
+

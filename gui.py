@@ -966,14 +966,22 @@ class App(tk.Tk):
 
         settings_frame = ttk.Frame(self.tab_polling, style="Surface.TFrame")
         settings_frame.pack(fill=tk.X, padx=10, pady=5)
-        
-        ttk.Label(settings_frame, text="Cooldown (seconds):").pack(side=tk.LEFT, padx=(15, 5), pady=10)
-        self.var_cooldown = tk.StringVar(value="600")
-        ttk.Entry(settings_frame, textvariable=self.var_cooldown, width=7).pack(side=tk.LEFT, padx=5)
 
-        ttk.Label(settings_frame, text="Gap (seconds):").pack(side=tk.LEFT, padx=(15, 5), pady=10)
+        ttk.Label(settings_frame, text="⏱ Cooldown (sec):", style="Surface.TLabel",
+                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=(15, 5), pady=10)
+        self.var_cooldown = tk.StringVar(value="600")
+        tk.Entry(settings_frame, textvariable=self.var_cooldown, width=7,
+                 font=("Consolas", 11), bg=ENTRY_BG, fg=ENTRY_FG,
+                 insertbackground=ENTRY_FG, relief="flat",
+                 highlightbackground=BORDER, highlightthickness=1).pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(settings_frame, text="🔄 Gap (sec):", style="Surface.TLabel",
+                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=(20, 5), pady=10)
         self.var_gap = tk.StringVar(value="60")
-        ttk.Entry(settings_frame, textvariable=self.var_gap, width=7).pack(side=tk.LEFT, padx=5)
+        tk.Entry(settings_frame, textvariable=self.var_gap, width=7,
+                 font=("Consolas", 11), bg=ENTRY_BG, fg=ENTRY_FG,
+                 insertbackground=ENTRY_FG, relief="flat",
+                 highlightbackground=BORDER, highlightthickness=1).pack(side=tk.LEFT, padx=5)
 
         log_frame = ttk.Frame(self.tab_polling, style="Surface.TFrame")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 10))

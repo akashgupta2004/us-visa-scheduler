@@ -495,8 +495,8 @@ async def run(cdp_port: int, customer: str, username: str):
                             with open(polling_state_file, "r") as f:
                                 pstate = json.load(f)
                                 polling_active = pstate.get("is_active", False)
-                                cooldown_seconds = int(pstate.get("cooldown", 60)) * 60
-                                gap_seconds = int(pstate.get("gap", 15)) * 60
+                                cooldown_seconds = int(pstate.get("cooldown", 600))
+                                gap_seconds = int(pstate.get("gap", 60))
                                 global_last_poll = float(pstate.get("global_last_poll", 0))
                         except Exception:
                             pass
@@ -524,7 +524,7 @@ async def run(cdp_port: int, customer: str, username: str):
                                 with open(polling_state_file, "r") as f:
                                     pstate = json.load(f)
                                 global_last_poll = float(pstate.get("global_last_poll", 0))
-                                gap_seconds = int(pstate.get("gap", 15)) * 60
+                                gap_seconds = int(pstate.get("gap", 60))
                                 
                                 if (time.time() - global_last_poll) > gap_seconds:
                                     pstate["global_last_poll"] = time.time()

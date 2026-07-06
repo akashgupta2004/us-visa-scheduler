@@ -967,13 +967,13 @@ class App(tk.Tk):
         settings_frame = ttk.Frame(self.tab_polling, style="Surface.TFrame")
         settings_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        ttk.Label(settings_frame, text="Cooldown (minutes):").pack(side=tk.LEFT, padx=(15, 5), pady=10)
-        self.var_cooldown = tk.StringVar(value="60")
-        ttk.Entry(settings_frame, textvariable=self.var_cooldown, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(settings_frame, text="Cooldown (seconds):").pack(side=tk.LEFT, padx=(15, 5), pady=10)
+        self.var_cooldown = tk.StringVar(value="600")
+        ttk.Entry(settings_frame, textvariable=self.var_cooldown, width=7).pack(side=tk.LEFT, padx=5)
 
-        ttk.Label(settings_frame, text="Gap (minutes):").pack(side=tk.LEFT, padx=(15, 5), pady=10)
-        self.var_gap = tk.StringVar(value="15")
-        ttk.Entry(settings_frame, textvariable=self.var_gap, width=5).pack(side=tk.LEFT, padx=5)
+        ttk.Label(settings_frame, text="Gap (seconds):").pack(side=tk.LEFT, padx=(15, 5), pady=10)
+        self.var_gap = tk.StringVar(value="60")
+        ttk.Entry(settings_frame, textvariable=self.var_gap, width=7).pack(side=tk.LEFT, padx=5)
 
         log_frame = ttk.Frame(self.tab_polling, style="Surface.TFrame")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 10))
@@ -1003,7 +1003,7 @@ class App(tk.Tk):
                     "cooldown": int(self.var_cooldown.get()),
                     "gap": int(self.var_gap.get())
                 }, f)
-            self._log_poll(f"[GUI] ✅ Polling activated. Cooldown={self.var_cooldown.get()}min, Gap={self.var_gap.get()}min. Waiting for first poll cycle...")
+            self._log_poll(f"[GUI] ✅ Polling activated. Cooldown={self.var_cooldown.get()}s, Gap={self.var_gap.get()}s. Waiting for first poll cycle...")
         except Exception as e:
             self._log_poll(f"[GUI] ❌ Error activating polling: {e}")
 

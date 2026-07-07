@@ -23,6 +23,7 @@ from src.booking.cdp_client import ensure_on_portal
 from src.auth.login import login, wait_for_waiting_room
 from src.auth.security import handle_security_question
 from src.common.config import ACCOUNTS_FILE
+from src.common.state import read_state, get_state_file
 
 load_dotenv()
 
@@ -281,6 +282,14 @@ async def run_polling_loop(cooldown_minutes: int, gap_minutes: int):
                         log.debug(f"Skipping {username}, in cooldown until {cooldown_end.strftime('%H:%M:%S')}")
                         continue
                 
+                # Check state guard (skip if booking is active)
+                state_file = get_state_file(username)
+                if state_file.exists():
+                    state = read_state(state_file)
+                    if state.get("extension_running") or state.get("pending"):
+                        log.info(f"Skipping {username}, account is currently busy with a booking.")
+                        continue
+
                 # We have an eligible account
                 success = await poll_account(account, p)
                 account_polled = True

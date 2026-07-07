@@ -313,13 +313,12 @@ async def run(cdp_port: int, customer: str, username: str):
                     trigger_ts = state.get("trigger_timestamp")
                     if trigger_ts:
                         delay = time.time() - trigger_ts
-                        if delay > 10.0:
-                            reason = "Unknown"
-                            if time.time() - runner_start_time < delay + 10:
-                                reason = "Bot was in the middle of restarting and logging in when the slot dropped."
-                            else:
-                                reason = "Bot was busy performing a scheduled keep-alive / stuck in a Cloudflare queue."
-                                
+                        if delay > 30.0:
+                            log.warning(f"⚠️ Trigger execution delayed by {delay:.1f} seconds! Dropping stale trigger to prevent 429 rate limit.")
+                            _update_state(state_file, {"extension_running": False, "pending": False})
+                            continue
+                        elif delay > 10.0:
+                            reason = "Bot was busy or in Cloudflare queue."
                             log.warning(f"⚠️ Trigger execution delayed by {delay:.1f} seconds! Reason: {reason}")
                         else:
                             log.info(f"⚡ Trigger picked up swiftly in {delay:.3f} seconds.")
@@ -470,7 +469,7 @@ async def run(cdp_port: int, customer: str, username: str):
                     if wait_start is None:
                         wait_start = time.time()
                     elapsed = time.time() - wait_start
-                    # Poll continuously at random intervals between 3-4 minutes
+                    # Poll continuously at intervals of roughly 1 minute
                     if (time.time() - last_polling_time) > next_poll_delay:
                         log.info(f"⏱️ Periodic Consular poll ({elapsed:.0f}s elapsed in wait mode). Triggering manual check.")
                         _update_state(state_file, {
@@ -479,7 +478,7 @@ async def run(cdp_port: int, customer: str, username: str):
                             "trigger_timestamp": time.time()
                         })
                         last_polling_time = time.time()
-                        next_poll_delay = random.randint(180, 240)
+                        next_poll_delay = random.randint(55, 65)  # 1 minute +/- 5 seconds
                         continue
 
                 # ── Background API Polling ────────────────────────────────────
@@ -577,6 +576,8 @@ async def run(cdp_port: int, customer: str, username: str):
                                         if ACCOUNTS_FILE.exists():
                                             try:
                                                 all_accounts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+                                                current_cross_triggers = 0
+                                                MAX_CROSS_TRIGGERS = 1
                                                 for acct_config in all_accounts:
                                                     acct_customer = acct_config.get("customer_name")
                                                     acct_username = acct_config.get("username")
@@ -584,6 +585,11 @@ async def run(cdp_port: int, customer: str, username: str):
                                                     
                                                     matched, matched_city, earliest_date = _match_polled_ofc_dates(results, acct_config)
                                                     if matched:
+                                                        if current_cross_triggers >= MAX_CROSS_TRIGGERS:
+                                                            log.info(f"⏭️ Skipping {acct_customer}: max concurrent cross-account triggers ({MAX_CROSS_TRIGGERS}) reached.")
+                                                            continue
+                                                        current_cross_triggers += 1
+                                                        
                                                         action_mode = acct_config.get("action_mode", "SNIPER")
                                                         action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
                                                         

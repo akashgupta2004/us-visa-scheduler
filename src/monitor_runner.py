@@ -161,6 +161,9 @@ def main():
             logged = log_slots_for_analysis(rows)
 
             ofc_buckets, consular_buckets = build_buckets(rows)
+            
+            MAX_TRIGGERS = 1
+            current_triggers = 0
 
             for customer in customers:
                 customer_name = customer["customer_name"]
@@ -205,6 +208,11 @@ def main():
 
                     if not should_alert(alert_key, state):
                         continue
+
+                    if current_triggers >= MAX_TRIGGERS:
+                        print(f"⏭️ Skipping {customer_name}: max concurrent triggers ({MAX_TRIGGERS}) reached for this cycle.")
+                        continue
+                    current_triggers += 1
 
                     send_slack(
                         format_slack_message(
@@ -267,6 +275,11 @@ def main():
 
                     if not should_alert(alert_key, state):
                         continue
+
+                    if current_triggers >= MAX_TRIGGERS:
+                        print(f"⏭️ Skipping {customer_name}: max concurrent triggers ({MAX_TRIGGERS}) reached for this cycle.")
+                        continue
+                    current_triggers += 1
 
                     send_slack(
                         format_slack_message(
@@ -348,6 +361,11 @@ def main():
 
                     if not should_alert(alert_key, state):
                         continue
+
+                    if current_triggers >= MAX_TRIGGERS:
+                        print(f"⏭️ Skipping {customer_name}: max concurrent triggers ({MAX_TRIGGERS}) reached for this cycle.")
+                        continue
+                    current_triggers += 1
 
                     send_slack(
                         format_slack_message(

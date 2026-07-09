@@ -482,7 +482,18 @@ async def run(cdp_port: int, customer: str, username: str):
                         continue
 
                 # ── Background API Polling ────────────────────────────────────
-                if not state.get("waitingForConsular") and not state.get("pending"):
+                current_account_role = "POLLING_ONLY"
+                if ACCOUNTS_FILE.exists():
+                    try:
+                        _accts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+                        for _ac in _accts:
+                            if _ac.get("customer_name") == customer and _ac.get("username") == username:
+                                current_account_role = _ac.get("role", "POLLING_ONLY")
+                                break
+                    except Exception:
+                        pass
+
+                if not state.get("waitingForConsular") and not state.get("pending") and current_account_role != "RESERVED_BOOKING":
                     polling_state_file = Path(__file__).parent / "polling_state.json"
                     polling_active = False
                     cooldown_seconds = 3600
@@ -582,6 +593,7 @@ async def run(cdp_port: int, customer: str, username: str):
                                                     acct_customer = acct_config.get("customer_name")
                                                     acct_username = acct_config.get("username")
                                                     if not acct_customer or not acct_username: continue
+                                                    if acct_config.get("role") == "POLLING_ONLY": continue
                                                     
                                                     matched, matched_city, earliest_date = _match_polled_ofc_dates(results, acct_config)
                                                     if matched:

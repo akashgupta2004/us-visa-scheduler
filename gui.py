@@ -201,6 +201,7 @@ class App(tk.Tk):
         self.var_username = tk.StringVar()
         self.var_password = tk.StringVar()
         self.var_action_mode = tk.StringVar(value="SNIPER")
+        self.var_account_role = tk.StringVar(value="POLLING_ONLY")
 
         self.var_ofc_vars = {city: tk.BooleanVar(value=True) for city in CITY_OPTIONS}
         self.var_consular_vars = {city: tk.BooleanVar(value=True) for city in CITY_OPTIONS}
@@ -342,6 +343,23 @@ class App(tk.Tk):
 
         ttk.Separator(container).pack(fill=tk.X, pady=10)
 
+        # ── Account Role Selector ──────────────────────────────────────────────
+        role_frame = ttk.Frame(container, style="Surface.TFrame")
+        role_frame.pack(fill=tk.X, pady=(5, 10))
+        ttk.Label(role_frame, text="ACCOUNT ROLE", font=("Segoe UI", 12, "bold"), foreground="#3b82f6", style="Surface.TLabel").pack(anchor="w")
+        ttk.Separator(role_frame).pack(fill=tk.X, pady=(5, 10))
+
+        role_radio_frame = ttk.Frame(role_frame, style="Surface.TFrame")
+        role_radio_frame.pack(fill=tk.X)
+        ttk.Radiobutton(role_radio_frame, text="Polling Only",
+                        variable=self.var_account_role, value="POLLING_ONLY",
+                        style="Toolbutton").pack(side=tk.LEFT, padx=(0, 10), pady=5)
+        ttk.Radiobutton(role_radio_frame, text="Reserved for Booking",
+                        variable=self.var_account_role, value="RESERVED_BOOKING",
+                        style="Toolbutton").pack(side=tk.LEFT, pady=5)
+
+        ttk.Separator(container).pack(fill=tk.X, pady=10)
+
         # OFC Section
         self.ofc_frame = ttk.Frame(container, style="Surface.TFrame")
         self.ofc_frame.pack(fill=tk.X, pady=(10, 0))
@@ -442,7 +460,27 @@ class App(tk.Tk):
         self.listbox.delete(0, tk.END)
         for acc in self.accounts:
             name = acc.get("customer_name", "Unknown")
-            self.listbox.insert(tk.END, name)
+            role = acc.get("role", "POLLING_ONLY")
+            role_str = "Polling"
+            if role == "RESERVED_BOOKING": role_str = "Booking"
+            
+            # Format date like "30th Sep"
+            end_date_str = acc.get("ofcEndDate", "")
+            if not end_date_str and acc.get("action_mode") == "RESCHEDULE_CONSULAR":
+                end_date_str = acc.get("consularEndDate", "")
+                
+            friendly_date = ""
+            if end_date_str:
+                try:
+                    dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+                    day = dt.day
+                    suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                    friendly_date = f" (Before {day}{suffix} {dt.strftime('%b')})"
+                except:
+                    pass
+
+            display_text = f"{name} [{role_str}]{friendly_date}"
+            self.listbox.insert(tk.END, display_text)
         
         self._update_active_bots_list()
 
@@ -478,6 +516,9 @@ class App(tk.Tk):
         self.var_username.set(acc.get("username", ""))
         self.var_password.set(acc.get("password", ""))
         self.var_action_mode.set(acc.get("action_mode", "SNIPER"))
+        acc_role = acc.get("role", "POLLING_ONLY")
+        if acc_role == "STANDARD": acc_role = "POLLING_ONLY"
+        self.var_account_role.set(acc_role)
 
         ofc_cities = acc.get("ofcCities", [])
         for city, var in self.var_ofc_vars.items():
@@ -525,6 +566,7 @@ class App(tk.Tk):
         self.var_username.set("")
         self.var_password.set("")
         self.var_action_mode.set("SNIPER")
+        self.var_account_role.set("POLLING_ONLY")
         for var in self.var_ofc_vars.values(): var.set(True)
         for var in self.var_consular_vars.values(): var.set(True)
         self.var_ofc_start.set("2026-01-01")
@@ -578,6 +620,7 @@ class App(tk.Tk):
             "username": self.var_username.get().strip(),
             "password": self.var_password.get().strip(),
             "action_mode": action_mode,
+            "role": self.var_account_role.get(),
             "ofcCities": ofc_cities,
             "ofcStartDate": ofc_start,
             "ofcEndDate": ofc_end,

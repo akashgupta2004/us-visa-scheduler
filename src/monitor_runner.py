@@ -175,6 +175,9 @@ def main():
                 if bot_state.get("completed"):
                     continue
 
+                if customer.get("role") == "POLLING_ONLY":
+                    continue
+
                 # Compute effective dates without mutating the customer dict
                 # so original dates are preserved across poll cycles
                 effective_ofc_start, effective_consular_start = _get_effective_dates(customer)

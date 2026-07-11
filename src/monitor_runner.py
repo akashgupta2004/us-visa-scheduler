@@ -116,7 +116,8 @@ def load_customers():
             "consular_start":  parse_date(consular_start),
             "consular_end":    parse_date(consular_end),
             "prevent_immediate": entry.get("prevent_immediate", False),
-            "multiPerson": entry.get("multiPerson", False)
+            "multiPerson": entry.get("multiPerson", False),
+            "role": entry.get("role", "")
         })
 
     return customers
@@ -212,10 +213,11 @@ def main():
                     if not should_alert(alert_key, state):
                         continue
 
-                    if current_triggers >= MAX_TRIGGERS:
+                    if customer.get("role") != "RESERVED_BOOKING" and current_triggers >= MAX_TRIGGERS:
                         print(f"⏭️ Skipping {customer_name}: max concurrent triggers ({MAX_TRIGGERS}) reached for this cycle.")
                         continue
-                    current_triggers += 1
+                    if customer.get("role") != "RESERVED_BOOKING":
+                        current_triggers += 1
 
                     send_slack(
                         format_slack_message(
@@ -241,7 +243,8 @@ def main():
                         continue
 
                     if bot_state.get("pending"):
-                        print(f"⚠️ Overwriting unhandled pending trigger for '{customer_name}' with newer fallback slot.")
+                        print(f"⏭️ Pending trigger already exists for '{customer_name}' — skipping to allow execution.")
+                        continue
 
                     _update_bot_state(state_file, {
                         "extension_running": False,
@@ -257,6 +260,7 @@ def main():
                         "multiPerson": customer.get("multiPerson", False),
                     })
                     print(f"✅ Consular-Only trigger queued for '{customer_name}'.")
+                    time.sleep(random.uniform(1.0, 2.0))
                     continue
 
                 if action_mode == "RESCHEDULE_CONSULAR":
@@ -279,10 +283,11 @@ def main():
                     if not should_alert(alert_key, state):
                         continue
 
-                    if current_triggers >= MAX_TRIGGERS:
+                    if customer.get("role") != "RESERVED_BOOKING" and current_triggers >= MAX_TRIGGERS:
                         print(f"⏭️ Skipping {customer_name}: max concurrent triggers ({MAX_TRIGGERS}) reached for this cycle.")
                         continue
-                    current_triggers += 1
+                    if customer.get("role") != "RESERVED_BOOKING":
+                        current_triggers += 1
 
                     send_slack(
                         format_slack_message(
@@ -309,7 +314,8 @@ def main():
                         continue
 
                     if bot_state.get("pending"):
-                        print(f"⚠️ Overwriting unhandled pending trigger for '{customer_name}' with newer reschedule slot.")
+                        print(f"⏭️ Pending trigger already exists for '{customer_name}' — skipping to allow execution.")
+                        continue
 
                     _update_bot_state(state_file, {
                         "extension_running": False,
@@ -325,6 +331,7 @@ def main():
                         "multiPerson": customer.get("multiPerson", False),
                     })
                     print(f"✅ Reschedule trigger queued for '{customer_name}'.")
+                    time.sleep(random.uniform(1.0, 2.0))
 
                 else:
                     # ── Full Booking (SNIPER) path ─────────────────────────────────
@@ -365,10 +372,11 @@ def main():
                     if not should_alert(alert_key, state):
                         continue
 
-                    if current_triggers >= MAX_TRIGGERS:
+                    if customer.get("role") != "RESERVED_BOOKING" and current_triggers >= MAX_TRIGGERS:
                         print(f"⏭️ Skipping {customer_name}: max concurrent triggers ({MAX_TRIGGERS}) reached for this cycle.")
                         continue
-                    current_triggers += 1
+                    if customer.get("role") != "RESERVED_BOOKING":
+                        current_triggers += 1
 
                     send_slack(
                         format_slack_message(
@@ -397,7 +405,8 @@ def main():
                         continue
 
                     if bot_state.get("pending"):
-                        print(f"⚠️ Overwriting unhandled pending trigger for '{customer_name}' with newer sniper slot.")
+                        print(f"⏭️ Pending trigger already exists for '{customer_name}' — skipping to allow execution.")
+                        continue
 
                     _update_bot_state(state_file, {
                         "extension_running": False,
@@ -417,6 +426,7 @@ def main():
                         "multiPerson": customer.get("multiPerson", False),
                     })
                     print(f"✅ Trigger queued for '{customer_name}' — booking runner will pick it up.")
+                    time.sleep(random.uniform(1.0, 2.0))
 
 
             save_state(state)

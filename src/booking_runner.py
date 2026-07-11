@@ -313,7 +313,7 @@ async def run(cdp_port: int, customer: str, username: str):
                     trigger_ts = state.get("trigger_timestamp")
                     if trigger_ts:
                         delay = time.time() - trigger_ts
-                        if delay > 30.0:
+                        if delay > 120.0:
                             log.warning(f"⚠️ Trigger execution delayed by {delay:.1f} seconds! Dropping stale trigger to prevent 429 rate limit.")
                             _update_state(state_file, {"extension_running": False, "pending": False})
                             continue

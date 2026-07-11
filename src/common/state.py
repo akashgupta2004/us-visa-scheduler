@@ -73,6 +73,22 @@ def set_flag(state_file: Path, **flags) -> None:
 
 def update_state(state_file: Path, updates: dict) -> None:
     """Atomically read, merge updates, and write the state file using a cross-process lock."""
+    remote_url = os.environ.get("REMOTE_TRIGGER_URL")
+    if remote_url:
+        import urllib.request
+        import threading
+        def send_remote():
+            try:
+                username = state_file.stem.replace("state_", "")
+                payload = json.dumps({"username": username, "updates": updates}).encode("utf-8")
+                req = urllib.request.Request(
+                    remote_url, data=payload, headers={'Content-Type': 'application/json'}, method='POST'
+                )
+                urllib.request.urlopen(req, timeout=3)
+            except Exception as e:
+                print(f"[STATE] ❌ Failed to send remote trigger to {remote_url}: {e}")
+        threading.Thread(target=send_remote, daemon=True).start()
+
     lock_file = state_file.with_suffix(".lock")
     if _acquire_lock(lock_file):
         try:

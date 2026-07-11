@@ -1,0 +1,444 @@
+[
+  {
+    "customer_name": "SHITALJAMDADE",
+    "username": "SHITALJAMDADE",
+    "password": "MUMBAI@1234",
+    "action_mode": "SNIPER",
+    "role": "RESERVED_BOOKING",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-09-30",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-09-30",
+    "security_questions": {
+      "car": "HONDA",
+      "job": "MUMBAI",
+      "food": "APPLE"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "rahulroy31ind",
+    "username": "rahulroy31ind",
+    "password": "Rahul@31roy1",
+    "action_mode": "SNIPER",
+    "role": "RESERVED_BOOKING",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-20",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-08-20",
+    "security_questions": {
+      "name": "kakoly",
+      "food": "biriyani",
+      "hero": "batman"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "aditya_raj_singh",
+    "username": "aditya_raj_singh",
+    "password": "Aditya#705",
+    "action_mode": "SNIPER",
+    "role": "RESERVED_BOOKING",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-20",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-08-20",
+    "security_questions": {
+      "company": "Synopsys",
+      "job": "Noida",
+      "city": "Ballia"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "tushar.isdm@gmail.com",
+    "username": "TusharWayal",
+    "password": "*Radhaji12345",
+    "action_mode": "SNIPER",
+    "role": "RESERVED_BOOKING",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-31",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-08-31",
+    "security_questions": {
+      "car": "Leso1",
+      "food": "Leso2",
+      "hero": "Leso3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "GOPINATH.SRINIVASAN",
+    "username": "GOPINATH.SRINIVASAN",
+    "password": "gOPI@2502",
+    "action_mode": "SNIPER",
+    "role": "RESERVED_BOOKING",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-31",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2027-12-31",
+    "security_questions": {
+      "car": "Leso1",
+      "food": "Leso2",
+      "hero": "Leso3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "PriyankaTusharWayal",
+    "username": "PriyankaTusharWayal",
+    "password": "rgc3FnU7",
+    "action_mode": "SNIPER",
+    "ofcCities": [
+      "CHENNAI"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-31",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2027-12-31",
+    "security_questions": {
+      "car": "Leso1",
+      "food": "Leso2",
+      "hero": "Leso3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "ganeshpy99",
+    "username": "ganeshpy99",
+    "password": "atlas@143",
+    "action_mode": "SNIPER",
+    "ofcCities": [
+      "CHENNAI",
+      "HYDERABAD"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-25",
+    "consularCities": [
+      "DELHI"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2027-08-25",
+    "security_questions": {
+      "car": "Leso1",
+      "food": "Leso2",
+      "hero": "Leso3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "URKESH VIJAYKUMAR",
+    "username": "Urkesh120",
+    "password": "Leso@123",
+    "action_mode": "SNIPER",
+    "role": "POLLING_ONLY",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-30",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-08-30",
+    "security_questions": {
+      "car": "Leso1",
+      "food": "Leso2",
+      "hero": "Leso3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "shruu_iyer",
+    "username": "shruu_iyer",
+    "password": "Life@usvisa3",
+    "action_mode": "SNIPER",
+    "role": "POLLING_ONLY",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-31",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-08-31",
+    "security_questions": {
+      "car": "Leso1",
+      "food": "Leso2",
+      "Hero": "Leso3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "Dipika Rangasami",
+    "username": "Dipika Rangasami",
+    "password": "leso@123",
+    "action_mode": "SNIPER",
+    "ofcCities": [
+      "CHENNAI"
+    ],
+    "ofcStartDate": "2026-07-10",
+    "ofcEndDate": "2026-09-30",
+    "consularCities": [
+      "CHENNAI"
+    ],
+    "consularStartDate": "2026-07-10",
+    "consularEndDate": "2026-09-30",
+    "security_questions": {
+      "car": "C777",
+      "food": "F777",
+      "hero": "H777"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "Sameera",
+    "username": "TAYYABG",
+    "password": "Elebin@ggc9",
+    "action_mode": "SNIPER",
+    "role": "POLLING_ONLY",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-09-04",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-09-04",
+    "security_questions": {
+      "car": "India1",
+      "food": "India2",
+      "hero": "India3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "Masroor Alam",
+    "username": "Sajan86",
+    "password": "Masroor@1986",
+    "action_mode": "SNIPER",
+    "ofcCities": [
+      "MUMBAI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-31",
+    "consularCities": [
+      "MUMBAI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-08-31",
+    "security_questions": {
+      "car": "India1",
+      "food": "India2",
+      "hero": "India3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "Venkata S",
+    "username": "subbumvr",
+    "password": "+B5y-?f?UE?sfUF",
+    "action_mode": "SNIPER",
+    "role": "POLLING_ONLY",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-08-31",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-08-31",
+    "security_questions": {
+      "car": "India1",
+      "food": "India2",
+      "hero": "India3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "namita0902",
+    "username": "namita0902",
+    "password": "Namita@1999",
+    "action_mode": "SNIPER",
+    "ofcCities": [
+      "MUMBAI"
+    ],
+    "ofcStartDate": "2026-07-08",
+    "ofcEndDate": "2026-08-31",
+    "consularCities": [
+      "MUMBAI"
+    ],
+    "consularStartDate": "2026-07-08",
+    "consularEndDate": "2026-08-31",
+    "security_questions": {
+      "maiden": "shalini",
+      "middle": "girish",
+      "food": "sushi"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  },
+  {
+    "customer_name": "Dhanya J Nadig",
+    "username": "dhanyajnadig588@gmail.com",
+    "password": "Dhanya@27",
+    "action_mode": "RESCHEDULE_FULL",
+    "role": "POLLING_ONLY",
+    "ofcCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "ofcStartDate": "2026-01-01",
+    "ofcEndDate": "2026-09-09",
+    "consularCities": [
+      "CHENNAI",
+      "MUMBAI",
+      "HYDERABAD",
+      "DELHI",
+      "KOLKATA"
+    ],
+    "consularStartDate": "2026-01-01",
+    "consularEndDate": "2026-09-09",
+    "security_questions": {
+      "car": "India1",
+      "food": "India2",
+      "hero": "India3"
+    },
+    "prevent_immediate": false,
+    "multiPerson": false
+  }
+]

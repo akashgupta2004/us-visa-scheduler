@@ -139,14 +139,17 @@ class App(tk.Tk):
         self.tab_accounts = ttk.Frame(self.notebook, style="TFrame")
         self.tab_orchestrator = ttk.Frame(self.notebook, style="TFrame")
         self.tab_polling = ttk.Frame(self.notebook, style="TFrame")
+        self.tab_settings = ttk.Frame(self.notebook, style="TFrame")
 
         self.notebook.add(self.tab_accounts, text="  Accounts Manager  ")
         self.notebook.add(self.tab_orchestrator, text="  Orchestrator Control  ")
         self.notebook.add(self.tab_polling, text="  Polling Control  ")
+        self.notebook.add(self.tab_settings, text="  Settings  ")
 
         self._build_accounts_tab()
         self._build_orchestrator_tab()
         self._build_polling_tab()
+        self._build_settings_tab()
 
     # ─── Accounts Tab ────────────────────────────────────────────────────────
 
@@ -1069,6 +1072,64 @@ class App(tk.Tk):
             self._log_poll("[GUI] 🛑 Polling deactivated. In-session polling stopped.")
         except Exception as e:
             self._log_poll(f"[GUI] ❌ Error stopping polling: {e}")
+
+    def _build_settings_tab(self):
+        top_frame = ttk.Frame(self.tab_settings, style="Surface.TFrame")
+        top_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        ttk.Label(top_frame, text="System Settings", style="Header.TLabel").pack(side=tk.LEFT, padx=15, pady=15)
+        ttk.Button(top_frame, text="💾 Save Settings", style="Success.TButton", command=self._on_save_settings).pack(side=tk.RIGHT, padx=15)
+
+        env_frame = ttk.Frame(self.tab_settings, style="Surface.TFrame")
+        env_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        ttk.Label(env_frame, text="Remote Architecture (Tailscale)", font=("Segoe UI", 12, "bold"), foreground="#3b82f6", style="Surface.TLabel").pack(anchor="w", padx=15, pady=(15,5))
+        ttk.Separator(env_frame).pack(fill=tk.X, padx=15, pady=5)
+        
+        ttk.Label(env_frame, text="REMOTE_TRIGGER_URL:", style="Subhead.TLabel").pack(anchor="w", padx=20, pady=(10,0))
+        
+        self.var_remote_url = tk.StringVar()
+        ent_remote = tk.Entry(env_frame, textvariable=self.var_remote_url, font=("Consolas", 11), bg=ENTRY_BG, fg=ENTRY_FG, insertbackground=ENTRY_FG, relief="flat", highlightbackground=BORDER, highlightthickness=1)
+        ent_remote.pack(fill=tk.X, padx=20, pady=(5,15))
+        
+        ttk.Label(env_frame, text="Example: http://100.x.x.x:8000/trigger\nSet this on the Polling laptop to point to the Booking laptop's Tailscale IP.", font=("Segoe UI", 9), foreground="#94a3b8", style="Surface.TLabel").pack(anchor="w", padx=20)
+        
+        self._load_settings()
+
+    def _load_settings(self):
+        env_path = BASE_DIR / ".env"
+        if env_path.exists():
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("REMOTE_TRIGGER_URL="):
+                        self.var_remote_url.set(line.strip().split("=", 1)[1])
+
+    def _on_save_settings(self):
+        env_path = BASE_DIR / ".env"
+        lines = []
+        if env_path.exists():
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+                
+        new_url = self.var_remote_url.get().strip()
+        
+        found = False
+        for i, line in enumerate(lines):
+            if line.startswith("REMOTE_TRIGGER_URL="):
+                if new_url:
+                    lines[i] = f"REMOTE_TRIGGER_URL={new_url}\n"
+                else:
+                    lines[i] = ""
+                found = True
+                break
+                
+        if not found and new_url:
+            lines.append(f"REMOTE_TRIGGER_URL={new_url}\n")
+            
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(line for line in lines if line.strip() != "")
+            
+        messagebox.showinfo("Success", "Settings saved to .env")
 
     def destroy(self):
         if self.orchestrator_proc:

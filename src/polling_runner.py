@@ -234,12 +234,12 @@ async def poll_account(account, p):
         if browser:
             try:
                 await browser.close()
-            except:
+            except Exception:
                 pass
         
         try:
             login_proc.kill()
-        except:
+        except Exception:
             pass
             
         _kill_chrome_by_port(cdp_port)

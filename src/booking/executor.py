@@ -4,10 +4,7 @@ import logging
 import asyncio
 import sys
 from pathlib import Path
-from datetime import datetime
 from playwright.async_api import Page
-
-from src.common.config import DATE_FORMATS
 
 # Ensure project root is on the path for top-level imports (slack.py)
 _project_root = str(Path(__file__).resolve().parent.parent.parent)
@@ -38,9 +35,6 @@ async def check_for_page_limit(page: Page, customerName: str, log: logging.Logge
 DEFAULT_OFC_CITY = "HYDERABAD"
 
 # City name mapping: internal canonical form → extension/portal dropdown form.
-# The monitor normalizes all cities to canonical form (e.g. "NEW DELHI" → "DELHI").
-# The visa portal dropdown uses "NEW DELHI" as the label, so we must reverse-map
-# when communicating with the browser extension.
 CITY_NORMALIZE = {
     "DELHI": "NEW DELHI",
 }
@@ -49,17 +43,6 @@ def normalize_city(city: str) -> str:
     """Map city names from internal canonical form to extension/portal form."""
     upper = city.strip().upper()
     return CITY_NORMALIZE.get(upper, upper)
-
-
-def parse_date_to_iso(value) -> str | None:
-    """Parse various date formats and return YYYY-MM-DD (ISO) for the extension."""
-    s = str(value).strip()
-    for fmt in DATE_FORMATS:
-        try:
-            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
 
 
 async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logger) -> tuple[bool, dict]:

@@ -20,6 +20,8 @@
 =============================================================
 """
 
+import argparse
+import os
 import subprocess
 import sys
 import time
@@ -28,6 +30,8 @@ from datetime import datetime
 import signal
 from pathlib import Path
 import queue
+
+from dotenv import load_dotenv
 
 # Ensure project root is on the path for top-level imports (slack.py)
 _project_root = str(Path(__file__).resolve().parent.parent)
@@ -179,7 +183,7 @@ def relay_output(proc: subprocess.Popen, label: str, ready_event: threading.Even
 # Main
 # ─────────────────────────────────────────────────────────────
 
-import argparse
+
 
 def stdin_listener(q: queue.Queue):
     for line in sys.stdin:
@@ -372,25 +376,38 @@ def main() -> None:
             start_bot_session(session)
 
     # ── Role Enforcement (Split Distributed Setup) ──────────────
-    import os
-    remote_trigger_url = os.environ.get("REMOTE_TRIGGER_URL", "").strip()
+    load_dotenv(Path(__file__).parent.parent / ".env")
+    
+    remote_trigger_url = os.getenv("REMOTE_TRIGGER_URL", "").strip()
+    laptop_role = os.getenv("LAPTOP_ROLE", "").strip().upper()
+    
+    # Fallback for old .env files before LAPTOP_ROLE was added
+    if not laptop_role:
+        if remote_trigger_url:
+            laptop_role = "POLLING"
+        else:
+            laptop_role = "ALL_IN_ONE"
+            
     valid_accounts = []
     
     for account in accounts:
         role = account.get("role", "POLLING_ONLY")
         c_name = account.get("customer_name") or account.get("username", "Unknown")
         
-        if remote_trigger_url:
+        if laptop_role == "POLLING":
             # Polling Laptop: Only run POLLING_ONLY
             if role == "RESERVED_BOOKING":
                 log(f"⏭️ Skipping VIP account '{c_name}' on Polling Laptop.")
                 continue
-        else:
+        elif laptop_role == "BOOKING":
             # Booking Laptop: Only run RESERVED_BOOKING
             if role == "POLLING_ONLY":
                 log(f"⏭️ Skipping Polling account '{c_name}' on Booking Laptop.")
                 continue
-                
+        elif laptop_role == "ALL_IN_ONE":
+            # Run everything
+            pass
+            
         valid_accounts.append(account)
         
     if not valid_accounts:
@@ -416,7 +433,14 @@ def main() -> None:
     # ── Start slot monitor ────────────────────────────────────
     # Track monitor_proc in a mutable dict so the main loop can detect crashes.
     monitor_state = {"proc": None}
-    if not args.no_monitor:
+    
+    # Do not start monitor on BOOKING laptop (Polling laptop handles it)
+    should_run_monitor = not args.no_monitor
+    if laptop_role == "BOOKING":
+        log("⏭️ Skipping Slot Monitor on Booking Laptop (Polling Laptop will handle CVS).")
+        should_run_monitor = False
+
+    if should_run_monitor:
         mp = spawn_monitor()
         monitor_state["proc"] = mp
         with procs_lock:

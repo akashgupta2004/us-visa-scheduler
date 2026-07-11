@@ -60,6 +60,36 @@ def mark_alert(alert_key, state):
     state[alert_key] = time.time()
 
 
+def _write_trigger_if_idle(state_file, bot_state, customer_name, trigger_updates, current_triggers, max_triggers, role):
+    """Check if the bot is idle, then write a trigger. Returns updated current_triggers count.
+    
+    Returns the (possibly incremented) current_triggers count, or -1 if skipped due to rate limit.
+    """
+    if role != "RESERVED_BOOKING" and current_triggers >= max_triggers:
+        print(f"\u23ed\ufe0f Skipping {customer_name}: max concurrent triggers ({max_triggers}) reached for this cycle.")
+        return current_triggers
+    
+    # Re-read bot state in case it changed during Slack formatting
+    from src.common.state import read_state as _reread
+    bot_state = _reread(state_file)
+    
+    if bot_state.get("extension_running"):
+        print(f"\u23ed\ufe0f  Extension already running for '{customer_name}' \u2014 skipping.")
+        return current_triggers
+
+    if bot_state.get("pending"):
+        print(f"\u23ed\ufe0f Pending trigger already exists for '{customer_name}' \u2014 skipping to allow execution.")
+        return current_triggers
+
+    _update_bot_state(state_file, trigger_updates)
+    print(f"\u2705 Trigger queued for '{customer_name}'.")
+    time.sleep(random.uniform(1.0, 2.0))
+    
+    if role != "RESERVED_BOOKING":
+        current_triggers += 1
+    return current_triggers
+
+
 def load_customers():
     if not ACCOUNTS_FILE.exists():
         raise FileNotFoundError(f"accounts.json not found at {ACCOUNTS_FILE}.")
@@ -218,7 +248,6 @@ def main():
                         continue
                     if customer.get("role") != "RESERVED_BOOKING":
                         current_triggers += 1
-
                     send_slack(
                         format_slack_message(
                             customer,
@@ -231,22 +260,11 @@ def main():
                     mark_alert(alert_key, state)
 
                     print(
-                        f"✅ [FALLBACK] Alert sent for {customer_name} | "
+                        f"\u2705 [FALLBACK] Alert sent for {customer_name} | "
                         f"Consular {matched_consular_city} {consular_slot['display_date']} ({consular_slot['count']} slots)"
                     )
 
-                    # Re-read bot state just in case it changed during Slack formatting
-                    bot_state = _read_bot_state(state_file)
-
-                    if bot_state.get("extension_running"):
-                        print(f"⏭️  Extension already running for '{customer_name}' — skipping.")
-                        continue
-
-                    if bot_state.get("pending"):
-                        print(f"⏭️ Pending trigger already exists for '{customer_name}' — skipping to allow execution.")
-                        continue
-
-                    _update_bot_state(state_file, {
+                    trigger_updates = {
                         "extension_running": False,
                         "pending": True,
                         "trigger_timestamp": time.time(),
@@ -258,9 +276,11 @@ def main():
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
                         "multiPerson": customer.get("multiPerson", False),
-                    })
-                    print(f"✅ Consular-Only trigger queued for '{customer_name}'.")
-                    time.sleep(random.uniform(1.0, 2.0))
+                    }
+                    current_triggers = _write_trigger_if_idle(
+                        state_file, bot_state, customer_name, trigger_updates,
+                        current_triggers, MAX_TRIGGERS, customer.get("role", "")
+                    )
                     continue
 
                 if action_mode == "RESCHEDULE_CONSULAR":
@@ -283,12 +303,6 @@ def main():
                     if not should_alert(alert_key, state):
                         continue
 
-                    if customer.get("role") != "RESERVED_BOOKING" and current_triggers >= MAX_TRIGGERS:
-                        print(f"⏭️ Skipping {customer_name}: max concurrent triggers ({MAX_TRIGGERS}) reached for this cycle.")
-                        continue
-                    if customer.get("role") != "RESERVED_BOOKING":
-                        current_triggers += 1
-
                     send_slack(
                         format_slack_message(
                             customer,
@@ -301,23 +315,11 @@ def main():
                     mark_alert(alert_key, state)
 
                     print(
-                        f"✅ [RESCHEDULE] Alert sent for {customer_name} | "
+                        f"\u2705 [RESCHEDULE] Alert sent for {customer_name} | "
                         f"Consular {matched_consular_city} {consular_slot['display_date']} ({consular_slot['count']} slots)"
                     )
 
-                    state_file = Path(__file__).parent / f"state_{uid}.json"
-                    # Re-read bot state just in case it changed during Slack formatting
-                    bot_state = _read_bot_state(state_file)
-
-                    if bot_state.get("extension_running"):
-                        print(f"⏭️  Extension already running for '{customer_name}' — skipping.")
-                        continue
-
-                    if bot_state.get("pending"):
-                        print(f"⏭️ Pending trigger already exists for '{customer_name}' — skipping to allow execution.")
-                        continue
-
-                    _update_bot_state(state_file, {
+                    trigger_updates = {
                         "extension_running": False,
                         "pending": True,
                         "trigger_timestamp": time.time(),
@@ -329,9 +331,11 @@ def main():
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
                         "multiPerson": customer.get("multiPerson", False),
-                    })
-                    print(f"✅ Reschedule trigger queued for '{customer_name}'.")
-                    time.sleep(random.uniform(1.0, 2.0))
+                    }
+                    current_triggers = _write_trigger_if_idle(
+                        state_file, bot_state, customer_name, trigger_updates,
+                        current_triggers, MAX_TRIGGERS, customer.get("role", "")
+                    )
 
                 else:
                     # ── Full Booking (SNIPER) path ─────────────────────────────────
@@ -372,12 +376,6 @@ def main():
                     if not should_alert(alert_key, state):
                         continue
 
-                    if customer.get("role") != "RESERVED_BOOKING" and current_triggers >= MAX_TRIGGERS:
-                        print(f"⏭️ Skipping {customer_name}: max concurrent triggers ({MAX_TRIGGERS}) reached for this cycle.")
-                        continue
-                    if customer.get("role") != "RESERVED_BOOKING":
-                        current_triggers += 1
-
                     send_slack(
                         format_slack_message(
                             customer,
@@ -390,25 +388,12 @@ def main():
                     mark_alert(alert_key, state)
 
                     print(
-                        f"✅ Alert sent for {customer_name} | "
+                        f"\u2705 Alert sent for {customer_name} | "
                         f"OFC {matched_ofc_city} {ofc['display_date']} ({ofc['count']} slots) | "
                         f"Consular {consular_desc}"
                     )
 
-                    # ── Signal bot2 to book immediately ────────────────────────
-                    state_file = Path(__file__).parent / f"state_{uid}.json"
-
-                    bot_state = _read_bot_state(state_file)
-
-                    if bot_state.get("extension_running"):
-                        print(f"⏭️  Extension already running for '{customer_name}' — skipping.")
-                        continue
-
-                    if bot_state.get("pending"):
-                        print(f"⏭️ Pending trigger already exists for '{customer_name}' — skipping to allow execution.")
-                        continue
-
-                    _update_bot_state(state_file, {
+                    trigger_updates = {
                         "extension_running": False,
                         "pending": True,
                         "trigger_timestamp": time.time(),
@@ -424,9 +409,11 @@ def main():
                         "customer_name": customer_name,
                         "prevent_immediate": customer.get("prevent_immediate", False),
                         "multiPerson": customer.get("multiPerson", False),
-                    })
-                    print(f"✅ Trigger queued for '{customer_name}' — booking runner will pick it up.")
-                    time.sleep(random.uniform(1.0, 2.0))
+                    }
+                    current_triggers = _write_trigger_if_idle(
+                        state_file, bot_state, customer_name, trigger_updates,
+                        current_triggers, MAX_TRIGGERS, customer.get("role", "")
+                    )
 
 
             save_state(state)

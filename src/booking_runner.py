@@ -31,6 +31,7 @@ import logging
 import random
 import argparse
 from pathlib import Path
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
@@ -100,7 +101,6 @@ def _match_polled_ofc_dates(results: dict, config: dict) -> tuple[bool, str, str
     
     # Apply prevent_immediate constraint if enabled
     if config.get("prevent_immediate"):
-        from datetime import datetime, timedelta
         dynamic_start = (datetime.today() + timedelta(days=3)).strftime("%Y-%m-%d")
         if not start or start < dynamic_start:
             start = dynamic_start
@@ -217,6 +217,153 @@ async def recover_session(page, customer: str, username: str):
         
     return True
 
+
+async def _broadcast_results(results: dict, customer: str):
+    """Broadcast successfully polled dates to other accounts in accounts.json."""
+    if not ACCOUNTS_FILE.exists():
+        return
+    try:
+        all_accounts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+        current_cross_triggers = 0
+        MAX_CROSS_TRIGGERS = 1
+        for acct_config in all_accounts:
+            acct_customer = acct_config.get("customer_name")
+            acct_username = acct_config.get("username")
+            if not acct_customer or not acct_username: continue
+            if acct_config.get("role") == "POLLING_ONLY": continue
+            
+            matched, matched_city, earliest_date = _match_polled_ofc_dates(results, acct_config)
+            if matched:
+                if current_cross_triggers >= MAX_CROSS_TRIGGERS:
+                    log.info(f"⏭️ Skipping {acct_customer}: max concurrent cross-account triggers ({MAX_CROSS_TRIGGERS}) reached.")
+                    continue
+                current_cross_triggers += 1
+                
+                action_mode = acct_config.get("action_mode", "SNIPER")
+                action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
+                
+                log.info(f"🎯 POLLING AUTO-TRIGGER: {acct_customer} matched {matched_city} (earliest: {earliest_date})")
+                send_slack(f"🎯 *Cross-Account Auto-Trigger* for `{acct_customer}` (found by `{customer}`)\nOFC {matched_city}: {earliest_date}\nFiring {action_type}...")
+                
+                acct_uid = safe_id(acct_username)
+                acct_state_file = Path(__file__).parent / f"state_{acct_uid}.json"
+                _update_state(acct_state_file, {
+                    "extension_running": False,
+                    "pending": True,
+                    "trigger_timestamp": time.time(),
+                    "action_type": action_type,
+                    "ofcCities": acct_config.get("ofcCities", []),
+                    "ofcPriorityCity": matched_city,
+                    "ofcStartDate": acct_config.get("ofcStartDate", ""),
+                    "ofcEndDate": acct_config.get("ofcEndDate", ""),
+                    "consularCities": acct_config.get("consularCities", []),
+                    "consularStartDate": acct_config.get("consularStartDate", ""),
+                    "consularEndDate": acct_config.get("consularEndDate", ""),
+                    "customer_name": acct_customer,
+                    "prevent_immediate": acct_config.get("prevent_immediate", False),
+                    "multiPerson": acct_config.get("multiPerson", False),
+                })
+                
+                # Stagger the triggers by 1 to 2 seconds to avoid overloading the portal
+                await asyncio.sleep(random.uniform(1.0, 2.0))
+    except Exception as e:
+        log.error(f"Error cross-triggering accounts: {e}")
+
+async def _try_background_poll(page, customer: str, username: str, last_background_poll: float, last_poll_debug: float) -> tuple[float, float]:
+    """Execute background API polling if permitted by global limits and personal cooldowns."""
+    polling_state_file = Path(__file__).parent / "polling_state.json"
+    polling_active = False
+    cooldown_seconds = 3600
+    gap_seconds = 900
+    global_last_poll = 0
+    
+    if polling_state_file.exists():
+        try:
+            with open(polling_state_file, "r") as f:
+                pstate = json.load(f)
+                polling_active = pstate.get("is_active", False)
+                cooldown_seconds = int(pstate.get("cooldown", 600))
+                gap_seconds = int(pstate.get("gap", 60))
+                global_last_poll = float(pstate.get("global_last_poll", 0))
+        except Exception:
+            pass
+            
+    # To poll, we must pass our personal cooldown AND the global gap must have elapsed
+    my_cooldown_passed = (time.time() - last_background_poll) > cooldown_seconds
+    global_gap_passed = (time.time() - global_last_poll) > gap_seconds
+    
+    if polling_active and (time.time() - last_poll_debug) > 30:
+        last_poll_debug = time.time()
+        print(f"[POLLING-RESULT] 🔍 DEBUG: active={polling_active}, my_cd_passed={my_cooldown_passed}(last={last_background_poll:.0f}, cd={cooldown_seconds}s), gap_passed={global_gap_passed}(last_global={global_last_poll:.0f}, gap={gap_seconds}s)", flush=True)
+    
+    if polling_active and my_cooldown_passed and global_gap_passed:
+        # Try to acquire the slot atomically
+        got_slot = False
+        polling_lock_file = Path(__file__).parent / "polling_state.lock"
+        try:
+            lock_fd = os.open(polling_lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(lock_fd)
+            try:
+                # Double check inside lock
+                with open(polling_state_file, "r") as f:
+                    pstate = json.load(f)
+                global_last_poll = float(pstate.get("global_last_poll", 0))
+                gap_seconds = int(pstate.get("gap", 60))
+                
+                if (time.time() - global_last_poll) > gap_seconds:
+                    pstate["global_last_poll"] = time.time()
+                    with open(polling_state_file, "w") as f:
+                        json.dump(pstate, f)
+                    got_slot = True
+            finally:
+                try:
+                    os.remove(polling_lock_file)
+                except OSError:
+                    pass
+        except FileExistsError:
+            # Cleanup stale lock
+            try:
+                if time.time() - os.path.getmtime(polling_lock_file) > 10:
+                    os.remove(polling_lock_file)
+            except OSError:
+                pass
+        except Exception:
+            pass
+            
+        if got_slot:
+            last_background_poll = time.time()
+            try:
+                res = await fetch_dates_via_browser(page)
+                if res and res.get("success"):
+                    print(f"[POLLING-RESULT] 🤖 Account '{customer}' just contributed polling data.", flush=True)
+                    results = res["results"]
+                    dates_found = False
+                    
+                    log_lines = [f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Polling by '{customer}':"]
+                    
+                    for city, dates in results.items():
+                        if isinstance(dates, list) and len(dates) > 0:
+                            dates_found = True
+                        print(f"[POLLING-RESULT] {city}: {dates}", flush=True)
+                        log_lines.append(f"  {city}: {dates}")
+                        
+                    # Write to file
+                    try:
+                        Path("logs").mkdir(exist_ok=True)
+                        with open("logs/polling.log", "a", encoding="utf-8") as f:
+                            f.write("\n".join(log_lines) + "\n")
+                    except Exception as e:
+                        print(f"[POLLING-RESULT] Error saving log: {e}")
+                            
+                    if dates_found:
+                        await _broadcast_results(results, customer)
+                else:
+                    print(f"[POLLING-RESULT] {res}", flush=True)
+            except Exception as e:
+                print(f"[POLLING-RESULT] Error: {e}", flush=True)
+
+    return last_background_poll, last_poll_debug
+
 # ─── Main runner loop ─────────────────────────────────────────────────────────
 
 async def run(cdp_port: int, customer: str, username: str):
@@ -240,11 +387,11 @@ async def run(cdp_port: int, customer: str, username: str):
     
     last_background_poll = 0
     was_polling_active = False
+    last_poll_debug = 0
 
     async with async_playwright() as pw:
         browser, context, page = await connect_to_chrome(pw, cdp_port, log, handle_dialogs=True)
 
-        from datetime import datetime
         def handle_console(msg):
             text = msg.text
             is_match = "Sniper" in text or "Consular" in text or "OFC" in text or "Booking" in text
@@ -314,9 +461,7 @@ async def run(cdp_port: int, customer: str, username: str):
                     if trigger_ts:
                         delay = time.time() - trigger_ts
                         if delay > 120.0:
-                            log.warning(f"⚠️ Trigger execution delayed by {delay:.1f} seconds! Dropping stale trigger to prevent 429 rate limit.")
-                            _update_state(state_file, {"extension_running": False, "pending": False})
-                            continue
+                            log.warning(f"⚠️ Trigger execution delayed by {delay:.1f} seconds! Continuing anyway (clock skew possible).")
                         elif delay > 10.0:
                             reason = "Bot was busy or in Cloudflare queue."
                             log.warning(f"⚠️ Trigger execution delayed by {delay:.1f} seconds! Reason: {reason}")
@@ -494,147 +639,9 @@ async def run(cdp_port: int, customer: str, username: str):
                         pass
 
                 if not state.get("waitingForConsular") and not state.get("pending") and current_account_role != "RESERVED_BOOKING":
-                    polling_state_file = Path(__file__).parent / "polling_state.json"
-                    polling_active = False
-                    cooldown_seconds = 3600
-                    gap_seconds = 900
-                    global_last_poll = 0
-                    
-                    if polling_state_file.exists():
-                        try:
-                            with open(polling_state_file, "r") as f:
-                                pstate = json.load(f)
-                                polling_active = pstate.get("is_active", False)
-                                cooldown_seconds = int(pstate.get("cooldown", 600))
-                                gap_seconds = int(pstate.get("gap", 60))
-                                global_last_poll = float(pstate.get("global_last_poll", 0))
-                        except Exception:
-                            pass
-                            
-                    # To poll, we must pass our personal cooldown AND the global gap must have elapsed
-                    my_cooldown_passed = (time.time() - last_background_poll) > cooldown_seconds
-                    global_gap_passed = (time.time() - global_last_poll) > gap_seconds
-                    
-                    # Debug: print every 30 seconds to show polling state
-                    if polling_active and not hasattr(run, '_last_poll_debug'):
-                        run._last_poll_debug = 0
-                    if polling_active and (time.time() - getattr(run, '_last_poll_debug', 0)) > 30:
-                        run._last_poll_debug = time.time()
-                        print(f"[POLLING-RESULT] 🔍 DEBUG: active={polling_active}, my_cd_passed={my_cooldown_passed}(last={last_background_poll:.0f}, cd={cooldown_seconds}s), gap_passed={global_gap_passed}(last_global={global_last_poll:.0f}, gap={gap_seconds}s)", flush=True)
-                    
-                    if polling_active and my_cooldown_passed and global_gap_passed:
-                        # Try to acquire the slot atomically
-                        got_slot = False
-                        polling_lock_file = Path(__file__).parent / "polling_state.lock"
-                        try:
-                            lock_fd = os.open(polling_lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                            os.close(lock_fd)
-                            try:
-                                # Double check inside lock
-                                with open(polling_state_file, "r") as f:
-                                    pstate = json.load(f)
-                                global_last_poll = float(pstate.get("global_last_poll", 0))
-                                gap_seconds = int(pstate.get("gap", 60))
-                                
-                                if (time.time() - global_last_poll) > gap_seconds:
-                                    pstate["global_last_poll"] = time.time()
-                                    with open(polling_state_file, "w") as f:
-                                        json.dump(pstate, f)
-                                    got_slot = True
-                            finally:
-                                try:
-                                    os.remove(polling_lock_file)
-                                except OSError:
-                                    pass
-                        except FileExistsError:
-                            # Cleanup stale lock
-                            try:
-                                if time.time() - os.path.getmtime(polling_lock_file) > 10:
-                                    os.remove(polling_lock_file)
-                            except OSError:
-                                pass
-                        except Exception:
-                            pass
-                            
-                        if got_slot:
-                            last_background_poll = time.time()
-                            try:
-                                res = await fetch_dates_via_browser(page)
-                                if res and res.get("success"):
-                                    print(f"[POLLING-RESULT] 🤖 Account '{customer}' just contributed polling data.", flush=True)
-                                    results = res["results"]
-                                    dates_found = False
-                                    
-                                    from datetime import datetime
-                                    log_lines = [f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Polling by '{customer}':"]
-                                    
-                                    for city, dates in results.items():
-                                        if isinstance(dates, list) and len(dates) > 0:
-                                            dates_found = True
-                                        print(f"[POLLING-RESULT] {city}: {dates}", flush=True)
-                                        log_lines.append(f"  {city}: {dates}")
-                                        
-                                    # Write to file
-                                    try:
-                                        Path("logs").mkdir(exist_ok=True)
-                                        with open("logs/polling.log", "a", encoding="utf-8") as f:
-                                            f.write("\n".join(log_lines) + "\n")
-                                    except Exception as e:
-                                        print(f"[POLLING-RESULT] Error saving log: {e}")
-                                            
-                                    if dates_found:
-                                        # Broadcast to all accounts
-                                        if ACCOUNTS_FILE.exists():
-                                            try:
-                                                all_accounts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
-                                                current_cross_triggers = 0
-                                                MAX_CROSS_TRIGGERS = 1
-                                                for acct_config in all_accounts:
-                                                    acct_customer = acct_config.get("customer_name")
-                                                    acct_username = acct_config.get("username")
-                                                    if not acct_customer or not acct_username: continue
-                                                    if acct_config.get("role") == "POLLING_ONLY": continue
-                                                    
-                                                    matched, matched_city, earliest_date = _match_polled_ofc_dates(results, acct_config)
-                                                    if matched:
-                                                        if current_cross_triggers >= MAX_CROSS_TRIGGERS:
-                                                            log.info(f"⏭️ Skipping {acct_customer}: max concurrent cross-account triggers ({MAX_CROSS_TRIGGERS}) reached.")
-                                                            continue
-                                                        current_cross_triggers += 1
-                                                        
-                                                        action_mode = acct_config.get("action_mode", "SNIPER")
-                                                        action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
-                                                        
-                                                        log.info(f"🎯 POLLING AUTO-TRIGGER: {acct_customer} matched {matched_city} (earliest: {earliest_date})")
-                                                        send_slack(f"🎯 *Cross-Account Auto-Trigger* for `{acct_customer}` (found by `{customer}`)\nOFC {matched_city}: {earliest_date}\nFiring {action_type}...")
-                                                        
-                                                        acct_uid = safe_id(acct_username)
-                                                        acct_state_file = Path(__file__).parent / f"state_{acct_uid}.json"
-                                                        _update_state(acct_state_file, {
-                                                            "extension_running": False,
-                                                            "pending": True,
-                                                            "trigger_timestamp": time.time(),
-                                                            "action_type": action_type,
-                                                            "ofcCities": acct_config.get("ofcCities", []),
-                                                            "ofcPriorityCity": matched_city,
-                                                            "ofcStartDate": acct_config.get("ofcStartDate", ""),
-                                                            "ofcEndDate": acct_config.get("ofcEndDate", ""),
-                                                            "consularCities": acct_config.get("consularCities", []),
-                                                            "consularStartDate": acct_config.get("consularStartDate", ""),
-                                                            "consularEndDate": acct_config.get("consularEndDate", ""),
-                                                            "customer_name": acct_customer,
-                                                            "prevent_immediate": acct_config.get("prevent_immediate", False),
-                                                            "multiPerson": acct_config.get("multiPerson", False),
-                                                        })
-                                                        
-                                                        # Stagger the triggers by 1 to 2 seconds to avoid overloading the portal
-                                                        time.sleep(random.uniform(1.0, 2.0))
-                                            except Exception as e:
-                                                log.error(f"Error cross-triggering accounts: {e}")
-                                else:
-                                    print(f"[POLLING-RESULT] {res}", flush=True)
-                            except Exception as e:
-                                print(f"[POLLING-RESULT] Error: {e}", flush=True)
+                    last_background_poll, last_poll_debug = await _try_background_poll(
+                        page, customer, username, last_background_poll, last_poll_debug
+                    )
 
                 # ── Keep-alive & Content Health Check ──────────────────────
                 now = time.time()

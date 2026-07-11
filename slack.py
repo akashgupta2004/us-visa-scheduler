@@ -13,15 +13,14 @@ import requests
 # Force UTF-8 output so emojis don't crash on Windows when piped
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
-# Load webhook URL from environment variable, with hardcoded fallback for backward compatibility
-SLACK_WEBHOOK = os.environ.get(
-    "SLACK_WEBHOOK_URL",
-    "https://hooks.slack.com/services/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"
-)
+# Load webhook URL from environment variable
+SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "")
 
 
 def send(message: str, emoji: str = "💬") -> bool:
     """Send a message to Slack. Returns True on success."""
+    if not SLACK_WEBHOOK:
+        return False
     payload = {"text": f"{emoji} {message}"}
     try:
         r = requests.post(SLACK_WEBHOOK, json=payload, timeout=10)

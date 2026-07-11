@@ -371,8 +371,33 @@ def main() -> None:
                 
             start_bot_session(session)
 
+    # ── Role Enforcement (Split Distributed Setup) ──────────────
+    import os
+    remote_trigger_url = os.environ.get("REMOTE_TRIGGER_URL", "").strip()
+    valid_accounts = []
+    
+    for account in accounts:
+        role = account.get("role", "POLLING_ONLY")
+        c_name = account.get("customer_name") or account.get("username", "Unknown")
+        
+        if remote_trigger_url:
+            # Polling Laptop: Only run POLLING_ONLY
+            if role == "RESERVED_BOOKING":
+                log(f"⏭️ Skipping VIP account '{c_name}' on Polling Laptop.")
+                continue
+        else:
+            # Booking Laptop: Only run RESERVED_BOOKING
+            if role == "POLLING_ONLY":
+                log(f"⏭️ Skipping Polling account '{c_name}' on Booking Laptop.")
+                continue
+                
+        valid_accounts.append(account)
+        
+    if not valid_accounts:
+        log("❌ No valid accounts to run based on current role settings!")
+
     # ── Spawn one session per account ─────────────────────────
-    for idx, account in enumerate(accounts):
+    for idx, account in enumerate(valid_accounts):
         cdp_port = BASE_CDP_PORT + idx
         sess_dict = {
             "account":               account,

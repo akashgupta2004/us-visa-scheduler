@@ -72,6 +72,13 @@ db_logger = MongoDBLogger()
 
 # ─── State file helpers (wrappers around shared state module) ─────────────────
 
+
+class SessionExpiredError(RuntimeError):
+    """Raised when the authenticated browser session has silently expired
+    (OFC date fetch returns the login HTML page instead of JSON).
+    The booking runner main loop catches this and runs recover_session()."""
+
+
 # ─── Session Recovery ─────────────────────────────────────────────────────────
 
 def _load_account_config(username: str) -> dict:
@@ -269,8 +276,36 @@ async def _broadcast_results(results: dict, customer: str):
     except Exception as e:
         log.error(f"Error cross-triggering accounts: {e}")
 
+def _looks_like_expired_session(result: dict) -> bool:
+    """Detect when fetch_dates_via_browser returned HTML login pages instead of JSON.
+
+    Each city entry becomes {'error': 'Not JSON. HTML Snippet: ...'} when the
+    browser session has silently expired and the OFC API redirected to a login
+    HTML page. This returns True if every city looks like that so the caller
+    can trigger session recovery instead of logging meaningless garbage.
+    """
+    results = (result or {}).get("results") or {}
+    if not results:
+        # An error like 'Could not find primaryId or appd' is also session-related
+        if (result or {}).get("error"):
+            return True
+        return False
+    expired = 0
+    for value in results.values():
+        if isinstance(value, dict) and ("Not JSON" in str(value.get("error", "")) or "HTML" in str(value.get("error", ""))):
+            expired += 1
+    # All cities returned HTML → session is dead
+    return expired > 0 and expired == len(results)
+
+
 async def _try_background_poll(page, customer: str, username: str, last_background_poll: float, last_poll_debug: float) -> tuple[float, float]:
-    """Execute background API polling if permitted by global limits and personal cooldowns."""
+    """Execute background API polling if permitted by global limits and personal cooldowns.
+
+    Returns (last_background_poll, last_poll_debug). Raises SessionExpiredError
+    when the OFC date fetch returns login HTML on every city, so the main loop
+    can run session recovery immediately instead of silently polling a dead
+    session.
+    """
     polling_state_file = Path(__file__).parent / "polling_state.json"
     polling_active = False
     cooldown_seconds = 3600
@@ -335,18 +370,27 @@ async def _try_background_poll(page, customer: str, username: str, last_backgrou
             try:
                 res = await fetch_dates_via_browser(page)
                 if res and res.get("success"):
-                    print(f"[POLLING-RESULT] 🤖 Account '{customer}' just contributed polling data.", flush=True)
                     results = res["results"]
                     dates_found = False
-                    
+
+                    # Detect a silently-expired session: every city returned a
+                    # login HTML page instead of JSON. Don't log the garbage or
+                    # keep polling on a dead session — raise so the main loop
+                    # recovers the session now.
+                    if _looks_like_expired_session(res):
+                        print(f"[POLLING-RESULT] 🚨 Session expired during background poll for '{customer}' (OFC API returned login HTML). Raising for recovery.", flush=True)
+                        raise SessionExpiredError("OFC date fetch returned login HTML for all cities")
+
+                    print(f"[POLLING-RESULT] 🤖 Account '{customer}' just contributed polling data.", flush=True)
+
                     log_lines = [f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Polling by '{customer}':"]
-                    
+
                     for city, dates in results.items():
                         if isinstance(dates, list) and len(dates) > 0:
                             dates_found = True
                         print(f"[POLLING-RESULT] {city}: {dates}", flush=True)
                         log_lines.append(f"  {city}: {dates}")
-                        
+
                     # Write to file
                     try:
                         Path("logs").mkdir(exist_ok=True)
@@ -354,11 +398,17 @@ async def _try_background_poll(page, customer: str, username: str, last_backgrou
                             f.write("\n".join(log_lines) + "\n")
                     except Exception as e:
                         print(f"[POLLING-RESULT] Error saving log: {e}")
-                            
+
                     if dates_found:
                         await _broadcast_results(results, customer)
                 else:
                     print(f"[POLLING-RESULT] {res}", flush=True)
+            except SessionExpiredError:
+                # Propagate so the main watch loop runs recover_session().
+                # Reset last_background_poll so we retry polling promptly after
+                # the session is restored rather than waiting a full cooldown.
+                last_background_poll = 0
+                raise
             except Exception as e:
                 print(f"[POLLING-RESULT] Error: {e}", flush=True)
 
@@ -639,9 +689,22 @@ async def run(cdp_port: int, customer: str, username: str):
                         pass
 
                 if not state.get("waitingForConsular") and not state.get("pending") and current_account_role != "RESERVED_BOOKING":
-                    last_background_poll, last_poll_debug = await _try_background_poll(
-                        page, customer, username, last_background_poll, last_poll_debug
-                    )
+                    try:
+                        last_background_poll, last_poll_debug = await _try_background_poll(
+                            page, customer, username, last_background_poll, last_poll_debug
+                        )
+                    except SessionExpiredError:
+                        # Background poll detected a dead session (OFC API
+                        # returned login HTML). Recover now instead of waiting
+                        # for the keep-alive health check to notice minutes later.
+                        print("")  # visual break
+                        log.warning("🚨 Session expired during background polling! Triggering recovery...")
+                        success = await recover_session(page, customer, username)
+                        if not success:
+                            log.error("Recovery failed after background-poll session expiry. Exiting to trigger orchestrator restart...")
+                            sys.exit(1)
+                        last_keep_alive = time.time()
+                        continue
 
                 # ── Keep-alive & Content Health Check ──────────────────────
                 now = time.time()

@@ -83,7 +83,10 @@ def _write_trigger_if_idle(state_file, bot_state, customer_name, trigger_updates
 
     _update_bot_state(state_file, trigger_updates)
     print(f"\u2705 Trigger queued for '{customer_name}'.")
-    time.sleep(random.uniform(1.0, 2.0))
+    if role == "RESERVED_BOOKING":
+        time.sleep(1.0)
+    else:
+        time.sleep(random.uniform(1.0, 2.0))
     
     if role != "RESERVED_BOOKING":
         current_triggers += 1

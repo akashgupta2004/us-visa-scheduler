@@ -217,12 +217,31 @@ async def poll_account(account, p):
         if data.get("error"):
             log.error(f"Failed to fetch data: {data['error']}")
             return False
-            
+
         if data.get("success"):
+            # Detect a silently-expired session: every city came back as a
+            # login HTML page instead of JSON. Treat as a failed poll (return
+            # False) so the caller does NOT put the account into a long
+            # "successful" cooldown — it should re-login on the next cycle.
+            results = data.get("results", {}) or {}
+            html_errors = [
+                city for city, dates in results.items()
+                if isinstance(dates, dict)
+                and ("Not JSON" in str(dates.get("error", "")) or "HTML" in str(dates.get("error", "")))
+            ]
+            if results and len(html_errors) == len(results):
+                log.error(
+                    f"❌ Polling returned login HTML for ALL cities for {customer_name} "
+                    f"({', '.join(html_errors)}). Session is expired — treating as failed poll."
+                )
+                return False
+
             log.info(f"✅ Successfully fetched dates for {customer_name}:")
-            for city, dates in data["results"].items():
+            for city, dates in results.items():
                 if isinstance(dates, list) and len(dates) > 0:
                     log.info(f"  📍 {city}: {len(dates)} dates available (Earliest: {dates[0].get('Date')})")
+                elif isinstance(dates, dict):
+                    log.warning(f"  📍 {city}: session/API error — {str(dates.get('error', ''))[:120]}")
                 else:
                     log.info(f"  📍 {city}: No dates available.")
             return True
@@ -293,10 +312,18 @@ async def run_polling_loop(cooldown_minutes: int, gap_minutes: int):
                 # We have an eligible account
                 success = await poll_account(account, p)
                 account_polled = True
-                
-                # Place in cooldown
-                cooldown_map[username] = datetime.now() + timedelta(minutes=cooldown_minutes)
-                log.info(f"Placed {username} in cooldown for {cooldown_minutes} minutes.")
+
+                if success:
+                    # Only place a long cooldown on a successful poll.
+                    cooldown_map[username] = datetime.now() + timedelta(minutes=cooldown_minutes)
+                    log.info(f"Placed {username} in cooldown for {cooldown_minutes} minutes.")
+                else:
+                    # A failed poll (e.g. expired session, login failure) should
+                    # retry soon, not wait a full cooldown. Use a short backoff
+                    # so the account re-attempts login on the next cycle.
+                    short_backoff = 5
+                    cooldown_map[username] = datetime.now() + timedelta(minutes=short_backoff)
+                    log.info(f"Poll failed for {username}. Short retry cooldown of {short_backoff} minutes.")
                 
                 # Wait for gap before next account
                 log.info(f"Waiting for gap period: {gap_minutes} minutes...")

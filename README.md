@@ -171,6 +171,35 @@ python main.py
 python main.py --no-monitor
 ```
 
+### Option C: Running on Two Different PCs (Advanced Setup)
+
+To optimize performance and avoid rate limits, you can split the bot's workload across two different computers:
+1. **Polling Laptop:** Dedicated to polling for available slots and running `POLLING_ONLY` accounts.
+2. **Booking Laptop:** Dedicated to receiving slot triggers and executing the booking for `RESERVED_BOOKING` accounts.
+
+**Prerequisites:**
+- Both computers must have the same Python environment and codebase.
+- Both computers need access to the same synchronized folder (e.g., via OneDrive, Dropbox, or a shared network drive) so that `state_{uid}.json` files can be updated by the Polling Laptop and instantly read by the Booking Laptop.
+
+**Step 1: Configure the Polling Laptop (PC 1)**
+1. Open the `.env` file on PC 1.
+2. Set the laptop role to `POLLING`:
+   ```env
+   LAPTOP_ROLE=POLLING
+   ```
+3. Run the orchestrator: `python main.py`
+   *(It will run `POLLING_ONLY` accounts and the slot monitor.)*
+
+**Step 2: Configure the Booking Laptop (PC 2)**
+1. Open the `.env` file on PC 2.
+2. Set the laptop role to `BOOKING`:
+   ```env
+   LAPTOP_ROLE=BOOKING
+   ```
+3. Run the orchestrator: `python main.py`
+   *(It will run `RESERVED_BOOKING` accounts and continuously watch state files for triggers.)*
+
+
 ## ⚙️ How It Works
 
 1. **Initialization:** The orchestrator reads `accounts.json` and assigns a unique Chrome CDP port (e.g., 9222, 9223) to each account.

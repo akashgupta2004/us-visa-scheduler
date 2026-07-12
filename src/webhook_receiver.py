@@ -4,6 +4,9 @@ from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 
+# Force UTF-8 output so emojis don't crash on Windows when piped
+sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
 # Ensure project root is on the path
 _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:

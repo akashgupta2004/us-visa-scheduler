@@ -123,3 +123,10 @@ def update_state(state_file: Path, updates: dict) -> None:
         state = read_state(state_file)
         state.update(updates)
         write_state(state_file, state)
+def get_state_file(username: str) -> Path:
+    """Get the state file path for a given username."""
+    from src.common.utils import safe_id
+
+    uid = safe_id(username)
+
+    return Path(__file__).resolve().parent.parent / f"state_{uid}.json"

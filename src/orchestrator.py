@@ -439,6 +439,24 @@ def main() -> None:
     if laptop_role == "BOOKING":
         log("⏭️ Skipping Slot Monitor on Booking Laptop (Polling Laptop will handle CVS).")
         should_run_monitor = False
+        
+        # Start the webhook receiver to listen for remote triggers from the Polling Laptop
+        def spawn_webhook():
+            env = os.environ.copy()
+            return subprocess.Popen(
+                [sys.executable, "-u", str(Path(__file__).parent / "webhook_receiver.py")],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                encoding="utf-8",
+                errors="replace"
+            )
+        wp = spawn_webhook()
+        with procs_lock:
+            all_procs.append(wp)
+        threading.Thread(target=relay_output, args=(wp, "webhook"), daemon=True).start()
 
     if should_run_monitor:
         mp = spawn_monitor()

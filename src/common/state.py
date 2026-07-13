@@ -65,30 +65,54 @@ def write_state(state_file: Path, state: dict) -> None:
 
 
 
-
-
 def update_state(state_file: Path, updates: dict) -> None:
     """Atomically read, merge updates, and write the state file using a cross-process lock."""
-    # Only send remote triggers for actual booking triggers (pending=True),
-    # not for every keep-alive or flag reset.
+
     if updates.get("pending") is True:
-        remote_url = os.environ.get("REMOTE_TRIGGER_URL")
+        remote_url = os.environ.get("REMOTE_TRIGGER_URL", "").strip()
+
+        if remote_url and not _is_reserved_booking_state(state_file):
+            username = state_file.stem.replace("state_", "")
+            print(
+                f"[STATE] ⏭️ Remote trigger blocked for '{username}': "
+                "account is not RESERVED_BOOKING."
+            )
+            remote_url = ""
+
         if remote_url:
             import urllib.request
             import threading
+
             def send_remote():
                 try:
                     username = state_file.stem.replace("state_", "")
-                    payload = json.dumps({"username": username, "updates": updates}).encode("utf-8")
+                    payload = json.dumps({
+                        "username": username,
+                        "updates": updates
+                    }).encode("utf-8")
+
                     req = urllib.request.Request(
-                        remote_url, data=payload, headers={'Content-Type': 'application/json'}, method='POST'
+                        remote_url,
+                        data=payload,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
                     )
-                    urllib.request.urlopen(req, timeout=3)
+
+                    with urllib.request.urlopen(req, timeout=3) as response:
+                        print(
+                            f"[STATE] ✅ Remote trigger sent for '{username}' "
+                            f"(HTTP {response.status})"
+                        )
                 except Exception as e:
-                    print(f"[STATE] ❌ Failed to send remote trigger to {remote_url}: {e}")
+                    print(
+                        f"[STATE] ❌ Failed to send remote trigger "
+                        f"to {remote_url}: {e}"
+                    )
+
             threading.Thread(target=send_remote, daemon=True).start()
 
     lock_file = state_file.with_suffix(".lock")
+
     if _acquire_lock(lock_file):
         try:
             state = read_state(state_file)
@@ -97,15 +121,6 @@ def update_state(state_file: Path, updates: dict) -> None:
         finally:
             _release_lock(lock_file)
     else:
-        # If lock fails, fallback to direct read-modify-write
         state = read_state(state_file)
         state.update(updates)
         write_state(state_file, state)
-
-
-def get_state_file(username: str) -> Path:
-    """Get the state file path for a given username."""
-    from src.common.utils import safe_id
-    uid = safe_id(username)
-    # State files live in the src/ directory alongside the runners
-    return Path(__file__).resolve().parent.parent / f"state_{uid}.json"

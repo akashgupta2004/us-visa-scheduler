@@ -64,7 +64,6 @@ def write_state(state_file: Path, state: dict) -> None:
             pass
 
 
-
 def update_state(state_file: Path, updates: dict) -> None:
     """Atomically read, merge updates, and write the state file using a cross-process lock."""
 

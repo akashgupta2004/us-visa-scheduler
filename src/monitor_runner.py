@@ -10,6 +10,7 @@
 import time
 import random
 import json
+import os
 import hashlib
 import sys
 from pathlib import Path
@@ -32,10 +33,16 @@ from src.common.state import read_state as _read_bot_state, update_state as _upd
 from slack import format_slack_message, send_slack, send_slack_error
 
 ALERT_COOLDOWN_SECONDS = 15 * 60
+TRIGGER_COOLDOWN_SECONDS = int(
+    os.getenv("REMOTE_TRIGGER_COOLDOWN_SECONDS", "300")
+)
 ERROR_BACKOFF_SECONDS = 40
 
 POLL_MIN_SECONDS = 10
 POLL_MAX_SECONDS = 15
+RESERVED_TRIGGER_STAGGER_SECONDS = float(
+    os.getenv("RESERVED_TRIGGER_STAGGER_SECONDS", "0.2")
+)
 
 def load_state():
     if not SLOT_ALERT_STATE_FILE.exists():
@@ -60,36 +67,111 @@ def mark_alert(alert_key, state):
     state[alert_key] = time.time()
 
 
-def _write_trigger_if_idle(state_file, bot_state, customer_name, trigger_updates, current_triggers, max_triggers, role):
-    """Check if the bot is idle, then write a trigger. Returns updated current_triggers count.
-    
-    Returns the (possibly incremented) current_triggers count, or -1 if skipped due to rate limit.
-    """
-    if role != "RESERVED_BOOKING" and current_triggers >= max_triggers:
-        print(f"\u23ed\ufe0f Skipping {customer_name}: max concurrent triggers ({max_triggers}) reached for this cycle.")
+def _send_alert_if_due(alert_key, state, message, success_message):
+    """Send Slack only when due. Slack must never block a booking trigger."""
+    if not should_alert(alert_key, state):
+        return False
+
+    try:
+        sent = send_slack(message)
+    except Exception as error:
+        print(
+            f"⚠️ Slack alert failed, but booking trigger continues: {error}"
+        )
+        return False
+
+    if sent:
+        mark_alert(alert_key, state)
+        print(success_message)
+        return True
+
+    print("⚠️ Slack alert was not sent, but booking trigger continues.")
+    return False
+
+
+def _write_trigger_if_idle(
+    state_file,
+    bot_state,
+    customer_name,
+    trigger_updates,
+    current_triggers,
+    max_triggers,
+    role,
+):
+    """Queue a trigger without allowing stale polling-PC state to block it."""
+    normalized_role = str(role or "").strip().upper()
+    remote_mode = bool(
+        os.getenv("REMOTE_TRIGGER_URL", "").strip()
+    )
+
+    if (
+        normalized_role != "RESERVED_BOOKING"
+        and current_triggers >= max_triggers
+    ):
+        print(
+            f"⏭️ Skipping {customer_name}: max concurrent triggers "
+            f"({max_triggers}) reached for this cycle."
+        )
         return current_triggers
-    
-    # Re-read bot state in case it changed during Slack formatting
+
     from src.common.state import read_state as _reread
     bot_state = _reread(state_file)
-    
-    if bot_state.get("extension_running"):
-        print(f"\u23ed\ufe0f  Extension already running for '{customer_name}' \u2014 skipping.")
+
+    if not remote_mode and bot_state.get("extension_running"):
+        print(
+            f"⏭️ Extension already running for '{customer_name}' — skipping."
+        )
+        return current_triggers
+    # On the booking PC, pending means the runner still has work.
+    # On the polling PC, state.py sends remotely and clears local pending.
+    if not remote_mode and bot_state.get("pending"):
+        print(
+            f"⏭️ Pending trigger already exists for "
+            f"'{customer_name}' — skipping to allow execution."
+        )
         return current_triggers
 
-    if bot_state.get("pending"):
-        print(f"\u23ed\ufe0f Pending trigger already exists for '{customer_name}' \u2014 skipping to allow execution.")
-        return current_triggers
+    # In remote mode, suppress only a repeat of the same account/slot/action.
+    # A different slot can still trigger immediately.
+    if remote_mode:
+        incoming_trigger_key = str(
+            trigger_updates.get("trigger_key", "")
+        )
+        previous_trigger_key = str(
+            bot_state.get("trigger_key", "")
+        )
+        previous_trigger_time = float(
+            bot_state.get("remote_trigger_sent_at", 0)
+            or bot_state.get("trigger_timestamp", 0)
+            or 0
+        )
+
+        if (
+            incoming_trigger_key
+            and incoming_trigger_key == previous_trigger_key
+            and previous_trigger_time
+            and time.time() - previous_trigger_time
+            < TRIGGER_COOLDOWN_SECONDS
+        ):
+            remaining = int(
+                TRIGGER_COOLDOWN_SECONDS
+                - (time.time() - previous_trigger_time)
+            )
+            print(
+                f"⏭️ Skipping {customer_name}: same remote trigger "
+                f"was sent recently ({max(remaining, 0)}s remaining)."
+            )
+            return current_triggers
 
     _update_bot_state(state_file, trigger_updates)
-    print(f"\u2705 Trigger queued for '{customer_name}'.")
-    if role == "RESERVED_BOOKING":
-        time.sleep(1.0)
+    print(f"✅ Trigger queued for '{customer_name}'.")
+
+    if normalized_role == "RESERVED_BOOKING":
+        time.sleep(max(RESERVED_TRIGGER_STAGGER_SECONDS, 0))
     else:
         time.sleep(random.uniform(1.0, 2.0))
-    
-    if role != "RESERVED_BOOKING":
         current_triggers += 1
+
     return current_triggers
 
 
@@ -178,57 +260,85 @@ def _get_effective_dates(customer):
 
 
 def main():
-    print(f"Running qualified slot monitor (interval ~{POLL_MIN_SECONDS}s, unlimited fetches)...")
+    print(
+        f"Running qualified slot monitor "
+        f"(interval ~{POLL_MIN_SECONDS}s, unlimited fetches)..."
+    )
     state = load_state()
 
     while True:
-        # Reload customers on every iteration to pick up GUI changes
+        # Reload customers on every iteration to pick up GUI changes.
         customers = load_customers()
 
         try:
             rows = fetch_rows()
             if not rows:
-                print("⚠️ API returned empty slot data (no rows). Monitor is still running, waiting for next poll...")
-                time.sleep(random.uniform(POLL_MIN_SECONDS, POLL_MAX_SECONDS))
+                print(
+                    "⚠️ API returned empty slot data (no rows). "
+                    "Monitor is still running, waiting for next poll..."
+                )
+                time.sleep(
+                    random.uniform(POLL_MIN_SECONDS, POLL_MAX_SECONDS)
+                )
                 continue
 
-            logged = log_slots_for_analysis(rows)
-
+            log_slots_for_analysis(rows)
             ofc_buckets, consular_buckets = build_buckets(rows)
-            
-            MAX_TRIGGERS = 1
+
+            # This limit applies only to non-RESERVED_BOOKING accounts.
+            # Every eligible RESERVED_BOOKING account can still trigger.
+            max_triggers = int(
+                os.getenv("MAX_MONITOR_TRIGGERS", "1")
+            )
             current_triggers = 0
 
             for customer in customers:
                 customer_name = customer["customer_name"]
                 action_mode = customer["action_mode"]
                 uid = customer["uid"]
-                state_file = Path(__file__).parent / f"state_{uid}.json"
+                role = str(
+                    customer.get("role", "")
+                ).strip().upper()
+                state_file = (
+                    Path(__file__).parent / f"state_{uid}.json"
+                )
                 bot_state = _read_bot_state(state_file)
 
                 if bot_state.get("completed"):
                     continue
 
-                if customer.get("role") == "POLLING_ONLY":
+                if role == "POLLING_ONLY":
                     continue
 
-                # Compute effective dates without mutating the customer dict
-                # so original dates are preserved across poll cycles
-                effective_ofc_start, effective_consular_start = _get_effective_dates(customer)
-                
+                effective_ofc_start, effective_consular_start = (
+                    _get_effective_dates(customer)
+                )
+
                 if bot_state.get("waitingForConsular"):
-                    # ── Fallback Consular-Only path (Post-OFC) ────────────────
+                    # ── Fallback Consular-Only path (Post-OFC) ───────────────
                     booked_ofc_date_str = bot_state.get("bookedOfcDate")
                     if booked_ofc_date_str:
-                        booked_date_obj = parse_date(booked_ofc_date_str)
+                        booked_date_obj = parse_date(
+                            booked_ofc_date_str
+                        )
                         if booked_date_obj:
-                            # Consular date must be strictly after the OFC date
+                            minimum_consular_date = (
+                                booked_date_obj + timedelta(days=1)
+                            )
                             if effective_consular_start:
-                                effective_consular_start = max(effective_consular_start, booked_date_obj + timedelta(days=1))
+                                effective_consular_start = max(
+                                    effective_consular_start,
+                                    minimum_consular_date,
+                                )
                             else:
-                                effective_consular_start = booked_date_obj + timedelta(days=1)
-                            
-                    consular_slot, matched_consular_city = find_valid_consular_slot(
+                                effective_consular_start = (
+                                    minimum_consular_date
+                                )
+
+                    (
+                        consular_slot,
+                        matched_consular_city,
+                    ) = find_valid_consular_slot(
                         consular_buckets,
                         customer["consular_cities"],
                         effective_consular_start,
@@ -239,56 +349,91 @@ def main():
                         continue
 
                     alert_key = make_alert_key(
-                        uid, "", matched_consular_city,
-                        "", consular_slot["display_date"],
+                        uid,
+                        "",
+                        matched_consular_city,
+                        "",
+                        consular_slot["display_date"],
                     )
 
-                    if not should_alert(alert_key, state):
-                        continue
-
-                    if customer.get("role") != "RESERVED_BOOKING" and current_triggers >= MAX_TRIGGERS:
-                        print(f"⏭️ Skipping {customer_name}: max concurrent triggers ({MAX_TRIGGERS}) reached for this cycle.")
-                        continue
-                    if customer.get("role") != "RESERVED_BOOKING":
-                        current_triggers += 1
-                    send_slack(
-                        format_slack_message(
-                            customer,
-                            None,
-                            consular_slot,
-                            None,
-                            matched_consular_city,
-                        )
-                    )
-                    mark_alert(alert_key, state)
-
-                    print(
-                        f"\u2705 [FALLBACK] Alert sent for {customer_name} | "
-                        f"Consular {matched_consular_city} {consular_slot['display_date']} ({consular_slot['count']} slots)"
+                    action_type = (
+                        "RESCHEDULE_FULL_CONSULAR_ONLY"
+                        if action_mode == "RESCHEDULE_FULL"
+                        else "SNIPER_CONSULAR_ONLY"
                     )
 
                     trigger_updates = {
                         "extension_running": False,
                         "pending": True,
                         "trigger_timestamp": time.time(),
-                        "action_type": "RESCHEDULE_FULL_CONSULAR_ONLY" if action_mode == "RESCHEDULE_FULL" else "SNIPER_CONSULAR_ONLY",
-                        "consularCities": customer["consular_cities"],
-                        "consularPriorityCity": matched_consular_city,
-                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d") if effective_consular_start else "",
-                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d") if customer["consular_end"] else "",
+                        "trigger_key": alert_key,
+                        "action_type": action_type,
+                        "consularCities": customer[
+                            "consular_cities"
+                        ],
+                        "consularPriorityCity": (
+                            matched_consular_city
+                        ),
+                        "consularStartDate": (
+                            effective_consular_start.strftime(
+                                "%Y-%m-%d"
+                            )
+                            if effective_consular_start
+                            else ""
+                        ),
+                        "consularEndDate": (
+                            customer["consular_end"].strftime(
+                                "%Y-%m-%d"
+                            )
+                            if customer["consular_end"]
+                            else ""
+                        ),
                         "customer_name": customer_name,
-                        "prevent_immediate": customer.get("prevent_immediate", False),
-                        "multiPerson": customer.get("multiPerson", False),
+                        "prevent_immediate": customer.get(
+                            "prevent_immediate", False
+                        ),
+                        "multiPerson": customer.get(
+                            "multiPerson", False
+                        ),
                     }
+
+                    # Queue first. Slack must never delay the booking trigger.
                     current_triggers = _write_trigger_if_idle(
-                        state_file, bot_state, customer_name, trigger_updates,
-                        current_triggers, MAX_TRIGGERS, customer.get("role", "")
+                        state_file,
+                        bot_state,
+                        customer_name,
+                        trigger_updates,
+                        current_triggers,
+                        max_triggers,
+                        role,
+                    )
+
+                    _send_alert_if_due(
+                        alert_key,
+                        state,
+                        format_slack_message(
+                            customer,
+                            None,
+                            consular_slot,
+                            None,
+                            matched_consular_city,
+                        ),
+                        (
+                            f"✅ [FALLBACK] Alert sent for "
+                            f"{customer_name} | Consular "
+                            f"{matched_consular_city} "
+                            f"{consular_slot['display_date']} "
+                            f"({consular_slot['count']} slots)"
+                        ),
                     )
                     continue
 
                 if action_mode == "RESCHEDULE_CONSULAR":
-                    # ── Consular Reschedule Only path ────────────────────────────
-                    consular_slot, matched_consular_city = find_valid_consular_slot(
+                    # ── Consular Reschedule Only path ───────────────────────
+                    (
+                        consular_slot,
+                        matched_consular_city,
+                    ) = find_valid_consular_slot(
                         consular_buckets,
                         customer["consular_cities"],
                         effective_consular_start,
@@ -299,143 +444,256 @@ def main():
                         continue
 
                     alert_key = make_alert_key(
-                        uid, "", matched_consular_city,
-                        "", consular_slot["display_date"],
+                        uid,
+                        "",
+                        matched_consular_city,
+                        "",
+                        consular_slot["display_date"],
                     )
 
-                    if not should_alert(alert_key, state):
-                        continue
+                    trigger_updates = {
+                        "extension_running": False,
+                        "pending": True,
+                        "trigger_timestamp": time.time(),
+                        "trigger_key": alert_key,
+                        "action_type": "RESCHEDULE_CONSULAR",
+                        "consularCities": customer[
+                            "consular_cities"
+                        ],
+                        "consularPriorityCity": (
+                            matched_consular_city
+                        ),
+                        "consularStartDate": (
+                            effective_consular_start.strftime(
+                                "%Y-%m-%d"
+                            )
+                            if effective_consular_start
+                            else ""
+                        ),
+                        "consularEndDate": (
+                            customer["consular_end"].strftime(
+                                "%Y-%m-%d"
+                            )
+                            if customer["consular_end"]
+                            else ""
+                        ),
+                        "customer_name": customer_name,
+                        "prevent_immediate": customer.get(
+                            "prevent_immediate", False
+                        ),
+                        "multiPerson": customer.get(
+                            "multiPerson", False
+                        ),
+                    }
 
-                    send_slack(
+                    current_triggers = _write_trigger_if_idle(
+                        state_file,
+                        bot_state,
+                        customer_name,
+                        trigger_updates,
+                        current_triggers,
+                        max_triggers,
+                        role,
+                    )
+
+                    _send_alert_if_due(
+                        alert_key,
+                        state,
                         format_slack_message(
                             customer,
                             None,
                             consular_slot,
                             None,
                             matched_consular_city,
-                        )
+                        ),
+                        (
+                            f"✅ [RESCHEDULE] Alert sent for "
+                            f"{customer_name} | Consular "
+                            f"{matched_consular_city} "
+                            f"{consular_slot['display_date']} "
+                            f"({consular_slot['count']} slots)"
+                        ),
                     )
-                    mark_alert(alert_key, state)
+                    continue
 
-                    print(
-                        f"\u2705 [RESCHEDULE] Alert sent for {customer_name} | "
-                        f"Consular {matched_consular_city} {consular_slot['display_date']} ({consular_slot['count']} slots)"
+                # ── Full Booking (SNIPER / RESCHEDULE_FULL) path ─────────────
+                ofc, matched_ofc_city = find_valid_ofc_slot(
+                    ofc_buckets,
+                    customer["ofc_cities"],
+                    effective_ofc_start,
+                    customer["ofc_end"],
+                )
+
+                if not ofc:
+                    continue
+
+                minimum_consular_date = ofc["date"] + timedelta(
+                    days=1
+                )
+                if effective_consular_start:
+                    consular_min_date = max(
+                        effective_consular_start,
+                        minimum_consular_date,
                     )
-
-                    trigger_updates = {
-                        "extension_running": False,
-                        "pending": True,
-                        "trigger_timestamp": time.time(),
-                        "action_type": "RESCHEDULE_CONSULAR",
-                        "consularCities": customer["consular_cities"],
-                        "consularPriorityCity": matched_consular_city,
-                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d") if effective_consular_start else "",
-                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d") if customer["consular_end"] else "",
-                        "customer_name": customer_name,
-                        "prevent_immediate": customer.get("prevent_immediate", False),
-                        "multiPerson": customer.get("multiPerson", False),
-                    }
-                    current_triggers = _write_trigger_if_idle(
-                        state_file, bot_state, customer_name, trigger_updates,
-                        current_triggers, MAX_TRIGGERS, customer.get("role", "")
-                    )
-
                 else:
-                    # ── Full Booking (SNIPER) path ─────────────────────────────────
-                    ofc, matched_ofc_city = find_valid_ofc_slot(
-                        ofc_buckets,
-                        customer["ofc_cities"],
-                        effective_ofc_start,
-                        customer["ofc_end"],
+                    consular_min_date = minimum_consular_date
+
+                (
+                    consular,
+                    matched_consular_city,
+                ) = find_valid_consular_slot(
+                    consular_buckets,
+                    customer["consular_cities"],
+                    consular_min_date,
+                    customer["consular_end"],
+                )
+
+                action_type = (
+                    "RESCHEDULE_FULL"
+                    if action_mode == "RESCHEDULE_FULL"
+                    else "SNIPER"
+                )
+
+                if consular:
+                    consular_desc = (
+                        f"{matched_consular_city} "
+                        f"{consular['display_date']} "
+                        f"({consular['count']} slots)"
+                    )
+                else:
+                    consular_desc = "pending (wait mode)"
+                    matched_consular_city = (
+                        customer["consular_cities"][0]
+                        if customer["consular_cities"]
+                        else ""
                     )
 
-                    if not ofc:
-                        continue
+                alert_key = make_alert_key(
+                    uid,
+                    matched_ofc_city,
+                    "",
+                    ofc["display_date"],
+                    "",
+                )
 
-                    consular_min_date = max(effective_consular_start, ofc["date"] + timedelta(days=1)) if effective_consular_start else ofc["date"] + timedelta(days=1)
-                    consular, matched_consular_city = find_valid_consular_slot(
-                        consular_buckets,
-                        customer["consular_cities"],
-                        consular_min_date,
-                        customer["consular_end"],
-                    )
-                    
-                    if consular:
-                        action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
-                        consular_desc = f"{matched_consular_city} {consular['display_date']} ({consular['count']} slots)"
-                    else:
-                        action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
-                        consular_desc = "pending (wait mode)"
-                        matched_consular_city = customer["consular_cities"][0] if customer["consular_cities"] else ""
-
-                    alert_key = make_alert_key(
-                        uid,
-                        matched_ofc_city,
-                        "",
-                        ofc["display_date"],
-                        "",
-                    )
-
-                    if not should_alert(alert_key, state):
-                        continue
-
-                    send_slack(
-                        format_slack_message(
-                            customer,
-                            ofc,
-                            consular,
-                            matched_ofc_city,
-                            matched_consular_city if consular else None,
+                trigger_updates = {
+                    "extension_running": False,
+                    "pending": True,
+                    "trigger_timestamp": time.time(),
+                    "trigger_key": alert_key,
+                    "action_type": action_type,
+                    "ofcCities": customer["ofc_cities"],
+                    "ofcPriorityCity": matched_ofc_city,
+                    "ofcStartDate": (
+                        effective_ofc_start.strftime("%Y-%m-%d")
+                        if effective_ofc_start
+                        else ""
+                    ),
+                    "ofcEndDate": (
+                        customer["ofc_end"].strftime("%Y-%m-%d")
+                        if customer["ofc_end"]
+                        else ""
+                    ),
+                    "consularCities": customer[
+                        "consular_cities"
+                    ],
+                    "consularPriorityCity": (
+                        matched_consular_city
+                    ),
+                    "consularStartDate": (
+                        effective_consular_start.strftime(
+                            "%Y-%m-%d"
                         )
-                    )
-                    mark_alert(alert_key, state)
+                        if effective_consular_start
+                        else ""
+                    ),
+                    "consularEndDate": (
+                        customer["consular_end"].strftime(
+                            "%Y-%m-%d"
+                        )
+                        if customer["consular_end"]
+                        else ""
+                    ),
+                    "customer_name": customer_name,
+                    "prevent_immediate": customer.get(
+                        "prevent_immediate", False
+                    ),
+                    "multiPerson": customer.get(
+                        "multiPerson", False
+                    ),
+                }
 
-                    print(
-                        f"\u2705 Alert sent for {customer_name} | "
-                        f"OFC {matched_ofc_city} {ofc['display_date']} ({ofc['count']} slots) | "
+                current_triggers = _write_trigger_if_idle(
+                    state_file,
+                    bot_state,
+                    customer_name,
+                    trigger_updates,
+                    current_triggers,
+                    max_triggers,
+                    role,
+                )
+
+                _send_alert_if_due(
+                    alert_key,
+                    state,
+                    format_slack_message(
+                        customer,
+                        ofc,
+                        consular,
+                        matched_ofc_city,
+                        (
+                            matched_consular_city
+                            if consular
+                            else None
+                        ),
+                    ),
+                    (
+                        f"✅ Alert sent for {customer_name} | "
+                        f"OFC {matched_ofc_city} "
+                        f"{ofc['display_date']} "
+                        f"({ofc['count']} slots) | "
                         f"Consular {consular_desc}"
-                    )
-
-                    trigger_updates = {
-                        "extension_running": False,
-                        "pending": True,
-                        "trigger_timestamp": time.time(),
-                        "action_type": action_type,
-                        "ofcCities": customer["ofc_cities"],
-                        "ofcPriorityCity": matched_ofc_city,
-                        "ofcStartDate": effective_ofc_start.strftime("%Y-%m-%d") if effective_ofc_start else "",
-                        "ofcEndDate": customer["ofc_end"].strftime("%Y-%m-%d") if customer["ofc_end"] else "",
-                        "consularCities": customer["consular_cities"],
-                        "consularPriorityCity": matched_consular_city,
-                        "consularStartDate": effective_consular_start.strftime("%Y-%m-%d") if effective_consular_start else "",
-                        "consularEndDate": customer["consular_end"].strftime("%Y-%m-%d") if customer["consular_end"] else "",
-                        "customer_name": customer_name,
-                        "prevent_immediate": customer.get("prevent_immediate", False),
-                        "multiPerson": customer.get("multiPerson", False),
-                    }
-                    current_triggers = _write_trigger_if_idle(
-                        state_file, bot_state, customer_name, trigger_updates,
-                        current_triggers, MAX_TRIGGERS, customer.get("role", "")
-                    )
-
+                    ),
+                )
 
             save_state(state)
+
         except Exception as e:
             print(f"❌ Error: {e}")
-            last_err_time = state.get("last_slack_error_time", 0)
-            if time.time() - last_err_time > ALERT_COOLDOWN_SECONDS:
+            last_err_time = state.get(
+                "last_slack_error_time", 0
+            )
+
+            if (
+                time.time() - last_err_time
+                > ALERT_COOLDOWN_SECONDS
+            ):
                 try:
-                    send_slack_error(f"Error in slot monitor: {e}")
-                    state["last_slack_error_time"] = time.time()
-                    save_state(state)
-                except Exception as slack_e:
-                    print(f"❌ Failed to send Slack error notification: {slack_e}")
+                    sent = send_slack_error(
+                        f"Error in slot monitor: {e}"
+                    )
+                    if sent:
+                        state["last_slack_error_time"] = (
+                            time.time()
+                        )
+                        save_state(state)
+                except Exception as slack_error:
+                    print(
+                        "❌ Failed to send Slack error "
+                        f"notification: {slack_error}"
+                    )
             else:
-                print("⏳ Slack error skipped (cooldown active).")
+                print(
+                    "⏳ Slack error skipped "
+                    "(cooldown active)."
+                )
+
             time.sleep(ERROR_BACKOFF_SECONDS)
             continue
 
-        time.sleep(random.uniform(POLL_MIN_SECONDS, POLL_MAX_SECONDS))
+        time.sleep(
+            random.uniform(POLL_MIN_SECONDS, POLL_MAX_SECONDS)
+        )
 
 
 if __name__ == "__main__":

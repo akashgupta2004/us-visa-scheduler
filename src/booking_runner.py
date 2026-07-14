@@ -235,22 +235,44 @@ async def _broadcast_results(results: dict, customer: str):
             ACCOUNTS_FILE.read_text(encoding="utf-8")
         )
 
-        triggered_count = 0
+        if not isinstance(all_accounts, list):
+            log.error("accounts.json must contain a JSON list.")
+            return
 
-        # 0 means unlimited eligible accounts.
+        triggered_count = 0
+        remote_mode = bool(
+            os.getenv("REMOTE_TRIGGER_URL", "").strip()
+        )
+        remote_trigger_cooldown = int(
+            os.getenv("REMOTE_TRIGGER_COOLDOWN_SECONDS", "300")
+        )
         max_cross_triggers = int(
             os.getenv("MAX_CROSS_TRIGGERS", "0")
         )
+        stagger_min = float(
+            os.getenv("CROSS_TRIGGER_STAGGER_MIN_SECONDS", "0.2")
+        )
+        stagger_max = float(
+            os.getenv("CROSS_TRIGGER_STAGGER_MAX_SECONDS", "0.5")
+        )
+        if stagger_max < stagger_min:
+            stagger_max = stagger_min
 
         for acct_config in all_accounts:
-            acct_customer = acct_config.get("customer_name")
-            acct_username = acct_config.get("username")
-            role = str(acct_config.get("role", "")).strip().upper()
+            acct_customer = str(
+                acct_config.get("customer_name", "")
+            ).strip()
+            acct_username = str(
+                acct_config.get("username", "")
+            ).strip()
+            role = str(
+                acct_config.get("role", "")
+            ).strip().upper()
 
             if not acct_customer or not acct_username:
                 continue
 
-            # Only booking accounts may receive remote triggers.
+            # Only reserved booking accounts may receive cross-account triggers.
             if role != "RESERVED_BOOKING":
                 continue
 
@@ -275,90 +297,127 @@ async def _broadcast_results(results: dict, customer: str):
             acct_state_file = (
                 Path(__file__).parent / f"state_{acct_uid}.json"
             )
-
-            # Do not overwrite a trigger already being processed.
             acct_state = _read_state(acct_state_file)
 
-            if acct_state.get("extension_running"):
+            if not remote_mode and acct_state.get("extension_running"):
                 log.info(
                     f"⏭️ Skipping {acct_customer}: booking is already running."
                 )
                 continue
 
-            if acct_state.get("pending"):
+            if not remote_mode and acct_state.get("pending"):
                 log.info(
                     f"⏭️ Skipping {acct_customer}: trigger already pending."
                 )
                 continue
-
-            action_mode = acct_config.get("action_mode", "SNIPER")
+            action_mode = str(
+                acct_config.get("action_mode", "SNIPER")
+            ).strip().upper()
             action_type = (
                 "RESCHEDULE_FULL"
                 if action_mode == "RESCHEDULE_FULL"
                 else "SNIPER"
             )
 
+            trigger_key = (
+                f"background|{acct_uid}|{matched_city.upper()}|"
+                f"{earliest_date}|{action_type}"
+            )
+
+            # In remote mode, suppress only repeated sends for the same slot
+            # and account. A different slot may still trigger immediately.
+            if remote_mode:
+                last_trigger_key = str(
+                    acct_state.get("trigger_key", "")
+                )
+                last_remote_trigger = float(
+                    acct_state.get("remote_trigger_sent_at", 0)
+                    or acct_state.get("trigger_timestamp", 0)
+                    or 0
+                )
+
+                if (
+                    last_trigger_key == trigger_key
+                    and last_remote_trigger
+                    and time.time() - last_remote_trigger
+                    < remote_trigger_cooldown
+                ):
+                    remaining = int(
+                        remote_trigger_cooldown
+                        - (time.time() - last_remote_trigger)
+                    )
+                    log.info(
+                        f"⏭️ Skipping {acct_customer}: same remote trigger "
+                        f"was sent recently ({max(remaining, 0)}s remaining)."
+                    )
+                    continue
+
             log.info(
                 f"🎯 POLLING AUTO-TRIGGER: {acct_customer} matched "
                 f"{matched_city} (earliest: {earliest_date})"
             )
 
-            # Slack must never prevent the booking trigger.
+            trigger_updates = {
+                "extension_running": False,
+                "pending": True,
+                "trigger_timestamp": time.time(),
+                "trigger_key": trigger_key,
+                "action_type": action_type,
+                "ofcCities": acct_config.get("ofcCities", []),
+                "ofcPriorityCity": matched_city,
+                "ofcStartDate": acct_config.get(
+                    "ofcStartDate", ""
+                ),
+                "ofcEndDate": acct_config.get(
+                    "ofcEndDate", ""
+                ),
+                "consularCities": acct_config.get(
+                    "consularCities", []
+                ),
+                "consularPriorityCity": acct_config.get(
+                    "consularPriorityCity", ""
+                ),
+                "consularStartDate": acct_config.get(
+                    "consularStartDate", ""
+                ),
+                "consularEndDate": acct_config.get(
+                    "consularEndDate", ""
+                ),
+                "customer_name": acct_customer,
+                "prevent_immediate": acct_config.get(
+                    "prevent_immediate", False
+                ),
+                "multiPerson": acct_config.get(
+                    "multiPerson", False
+                ),
+            }
+
+            # Queue the booking first. Slack must never delay or block it.
+            _update_state(acct_state_file, trigger_updates)
+            triggered_count += 1
+
             try:
-                send_slack(
+                sent = send_slack(
                     f"🎯 *Cross-Account Auto-Trigger*\n"
                     f"*Booking ID:* `{acct_customer}`\n"
                     f"*Detected by:* `{customer}`\n"
                     f"*OFC:* {matched_city} — {earliest_date}\n"
                     f"*Action:* {action_type}"
                 )
+                if not sent:
+                    log.warning(
+                        f"⚠️ Slack alert was not sent for {acct_customer}, "
+                        "but the booking trigger was queued."
+                    )
             except Exception as slack_error:
                 log.warning(
                     f"⚠️ Slack alert failed for {acct_customer}, "
                     f"but booking will continue: {slack_error}"
                 )
 
-            _update_state(
-                acct_state_file,
-                {
-                    "extension_running": False,
-                    "pending": True,
-                    "trigger_timestamp": time.time(),
-                    "action_type": action_type,
-                    "ofcCities": acct_config.get("ofcCities", []),
-                    "ofcPriorityCity": matched_city,
-                    "ofcStartDate": acct_config.get(
-                        "ofcStartDate", ""
-                    ),
-                    "ofcEndDate": acct_config.get(
-                        "ofcEndDate", ""
-                    ),
-                    "consularCities": acct_config.get(
-                        "consularCities", []
-                    ),
-                    "consularPriorityCity": acct_config.get(
-                        "consularPriorityCity", ""
-                    ),
-                    "consularStartDate": acct_config.get(
-                        "consularStartDate", ""
-                    ),
-                    "consularEndDate": acct_config.get(
-                        "consularEndDate", ""
-                    ),
-                    "customer_name": acct_customer,
-                    "prevent_immediate": acct_config.get(
-                        "prevent_immediate", False
-                    ),
-                    "multiPerson": acct_config.get(
-                        "multiPerson", False
-                    ),
-                },
+            await asyncio.sleep(
+                random.uniform(stagger_min, stagger_max)
             )
-
-            triggered_count += 1
-
-            # Deliberately stagger different booking IDs.
-            await asyncio.sleep(random.uniform(1.0, 2.0))
 
         if triggered_count:
             log.info(
@@ -370,6 +429,7 @@ async def _broadcast_results(results: dict, customer: str):
             f"Error cross-triggering accounts: {e}",
             exc_info=True,
         )
+
 def _looks_like_expired_session(result: dict) -> bool:
     """Detect when fetch_dates_via_browser returned HTML login pages instead of JSON.
 

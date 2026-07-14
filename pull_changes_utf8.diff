@@ -1,0 +1,445 @@
+﻿diff --git a/slack.py b/slack.py
+index b695f95..92ffe19 100644
+--- a/slack.py
++++ b/slack.py
+@@ -9,6 +9,9 @@ Usage:
+ import os
+ import sys
+ import requests
++from dotenv import load_dotenv
++
++load_dotenv()
+ 
+ # Force UTF-8 output so emojis don't crash on Windows when piped
+ sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+diff --git a/src/booking_runner.py b/src/booking_runner.py
+index cdf9c5a..791739f 100644
+--- a/src/booking_runner.py
++++ b/src/booking_runner.py
+@@ -226,56 +226,150 @@ async def recover_session(page, customer: str, username: str):
+ 
+ 
+ async def _broadcast_results(results: dict, customer: str):
+-    """Broadcast successfully polled dates to other accounts in accounts.json."""
++    """Trigger every idle RESERVED_BOOKING account matching the polled dates."""
+     if not ACCOUNTS_FILE.exists():
+         return
++
+     try:
+-        all_accounts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+-        current_cross_triggers = 0
+-        MAX_CROSS_TRIGGERS = 1
++        all_accounts = json.loads(
++            ACCOUNTS_FILE.read_text(encoding="utf-8")
++        )
++
++        triggered_count = 0
++
++        # 0 means unlimited eligible accounts.
++        max_cross_triggers = int(
++            os.getenv("MAX_CROSS_TRIGGERS", "0")
++        )
++
+         for acct_config in all_accounts:
+             acct_customer = acct_config.get("customer_name")
+             acct_username = acct_config.get("username")
+-            if not acct_customer or not acct_username: continue
+-            if acct_config.get("role") == "POLLING_ONLY": continue
+-            
+-            matched, matched_city, earliest_date = _match_polled_ofc_dates(results, acct_config)
+-            if matched:
+-                if current_cross_triggers >= MAX_CROSS_TRIGGERS:
+-                    log.info(f"ΓÅ¡∩╕Å Skipping {acct_customer}: max concurrent cross-account triggers ({MAX_CROSS_TRIGGERS}) reached.")
+-                    continue
+-                current_cross_triggers += 1
+-                
+-                action_mode = acct_config.get("action_mode", "SNIPER")
+-                action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
+-                
+-                log.info(f"≡ƒÄ» POLLING AUTO-TRIGGER: {acct_customer} matched {matched_city} (earliest: {earliest_date})")
+-                send_slack(f"≡ƒÄ» *Cross-Account Auto-Trigger* for `{acct_customer}` (found by `{customer}`)\nOFC {matched_city}: {earliest_date}\nFiring {action_type}...")
+-                
+-                acct_uid = safe_id(acct_username)
+-                acct_state_file = Path(__file__).parent / f"state_{acct_uid}.json"
+-                _update_state(acct_state_file, {
++            role = str(acct_config.get("role", "")).strip().upper()
++
++            if not acct_customer or not acct_username:
++                continue
++
++            # Only booking accounts may receive remote triggers.
++            if role != "RESERVED_BOOKING":
++                continue
++
++            matched, matched_city, earliest_date = (
++                _match_polled_ofc_dates(results, acct_config)
++            )
++
++            if not matched:
++                continue
++
++            if (
++                max_cross_triggers > 0
++                and triggered_count >= max_cross_triggers
++            ):
++                log.info(
++                    f"ΓÅ¡∩╕Å Skipping {acct_customer}: maximum cross-account "
++                    f"triggers ({max_cross_triggers}) reached."
++                )
++                continue
++
++            acct_uid = safe_id(acct_username)
++            acct_state_file = (
++                Path(__file__).parent / f"state_{acct_uid}.json"
++            )
++
++            # Do not overwrite a trigger already being processed.
++            acct_state = _read_state(acct_state_file)
++
++            if acct_state.get("extension_running"):
++                log.info(
++                    f"ΓÅ¡∩╕Å Skipping {acct_customer}: booking is already running."
++                )
++                continue
++
++            if acct_state.get("pending"):
++                log.info(
++                    f"ΓÅ¡∩╕Å Skipping {acct_customer}: trigger already pending."
++                )
++                continue
++
++            action_mode = acct_config.get("action_mode", "SNIPER")
++            action_type = (
++                "RESCHEDULE_FULL"
++                if action_mode == "RESCHEDULE_FULL"
++                else "SNIPER"
++            )
++
++            log.info(
++                f"≡ƒÄ» POLLING AUTO-TRIGGER: {acct_customer} matched "
++                f"{matched_city} (earliest: {earliest_date})"
++            )
++
++            # Slack must never prevent the booking trigger.
++            try:
++                send_slack(
++                    f"≡ƒÄ» *Cross-Account Auto-Trigger*\n"
++                    f"*Booking ID:* `{acct_customer}`\n"
++                    f"*Detected by:* `{customer}`\n"
++                    f"*OFC:* {matched_city} ΓÇö {earliest_date}\n"
++                    f"*Action:* {action_type}"
++                )
++            except Exception as slack_error:
++                log.warning(
++                    f"ΓÜá∩╕Å Slack alert failed for {acct_customer}, "
++                    f"but booking will continue: {slack_error}"
++                )
++
++            _update_state(
++                acct_state_file,
++                {
+                     "extension_running": False,
+                     "pending": True,
+                     "trigger_timestamp": time.time(),
+                     "action_type": action_type,
+                     "ofcCities": acct_config.get("ofcCities", []),
+                     "ofcPriorityCity": matched_city,
+-                    "ofcStartDate": acct_config.get("ofcStartDate", ""),
+-                    "ofcEndDate": acct_config.get("ofcEndDate", ""),
+-                    "consularCities": acct_config.get("consularCities", []),
+-                    "consularStartDate": acct_config.get("consularStartDate", ""),
+-                    "consularEndDate": acct_config.get("consularEndDate", ""),
++                    "ofcStartDate": acct_config.get(
++                        "ofcStartDate", ""
++                    ),
++                    "ofcEndDate": acct_config.get(
++                        "ofcEndDate", ""
++                    ),
++                    "consularCities": acct_config.get(
++                        "consularCities", []
++                    ),
++                    "consularPriorityCity": acct_config.get(
++                        "consularPriorityCity", ""
++                    ),
++                    "consularStartDate": acct_config.get(
++                        "consularStartDate", ""
++                    ),
++                    "consularEndDate": acct_config.get(
++                        "consularEndDate", ""
++                    ),
+                     "customer_name": acct_customer,
+-                    "prevent_immediate": acct_config.get("prevent_immediate", False),
+-                    "multiPerson": acct_config.get("multiPerson", False),
+-                })
+-                
+-                # Stagger the triggers by 1 to 2 seconds to avoid overloading the portal
+-                await asyncio.sleep(random.uniform(1.0, 2.0))
+-    except Exception as e:
+-        log.error(f"Error cross-triggering accounts: {e}")
++                    "prevent_immediate": acct_config.get(
++                        "prevent_immediate", False
++                    ),
++                    "multiPerson": acct_config.get(
++                        "multiPerson", False
++                    ),
++                },
++            )
+ 
++            triggered_count += 1
++
++            # Deliberately stagger different booking IDs.
++            await asyncio.sleep(random.uniform(1.0, 2.0))
++
++        if triggered_count:
++            log.info(
++                f"Γ£à Triggered {triggered_count} eligible booking account(s)."
++            )
++
++    except Exception as e:
++        log.error(
++            f"Error cross-triggering accounts: {e}",
++            exc_info=True,
++        )
+ def _looks_like_expired_session(result: dict) -> bool:
+     """Detect when fetch_dates_via_browser returned HTML login pages instead of JSON.
+ 
+diff --git a/src/common/state.py b/src/common/state.py
+index 1d3bcbb..5cd5358 100644
+--- a/src/common/state.py
++++ b/src/common/state.py
+@@ -8,23 +8,35 @@ race conditions.
+ 
+ import json
+ import os
++import threading
+ import time
++import urllib.request
+ from pathlib import Path
+ 
++from src.common.config import ACCOUNTS_FILE
++from src.common.utils import safe_id
++
+ 
+ def _acquire_lock(lock_file: Path, timeout: float = 5.0) -> bool:
+     """Acquire a cross-process lock using a dedicated .lock file."""
+     start = time.time()
++
+     while time.time() - start < timeout:
+         try:
+-            # os.O_EXCL ensures this fails if the file already exists
+-            fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
++            # os.O_EXCL ensures this fails if the file already exists.
++            fd = os.open(
++                str(lock_file),
++                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
++            )
+             os.close(fd)
+             return True
++
+         except FileExistsError:
+             time.sleep(0.05)
++
+         except OSError:
+             time.sleep(0.05)
++
+     return False
+ 
+ 
+@@ -45,50 +57,145 @@ def read_state(state_file: Path) -> dict:
+ 
+ 
+ def write_state(state_file: Path, state: dict) -> None:
+-    """Write state dict to a JSON file using atomic write pattern.
+-    
+-    Writes to a temporary file first, then replaces the target to minimize
+-    the window where a concurrent reader could see a partial write.
++    """
++    Write the state dictionary using an atomic write pattern.
++
++    Writes to a temporary file first, then replaces the target file so
++    another process does not read partially written JSON.
+     """
+     tmp_path = state_file.with_suffix(".json.tmp")
++
+     try:
+-        tmp_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+-        # os.replace is atomic on the same filesystem
++        tmp_path.write_text(
++            json.dumps(state, indent=2),
++            encoding="utf-8",
++        )
++
++        # Atomic when source and destination are on the same filesystem.
+         os.replace(str(tmp_path), str(state_file))
++
+     except Exception:
+-        # Fallback: direct write if atomic replace fails
+-        state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
++        # Fallback if atomic replacement fails.
++        state_file.write_text(
++            json.dumps(state, indent=2),
++            encoding="utf-8",
++        )
++
+         try:
+             tmp_path.unlink(missing_ok=True)
+         except Exception:
+             pass
+ 
+ 
+-
++def _is_reserved_booking_state(state_file: Path) -> bool:
++    """
++    Return True only if the state file belongs to an account whose role
++    is RESERVED_BOOKING in accounts.json.
++    """
++    try:
++        if not ACCOUNTS_FILE.exists():
++            print(
++                f"[STATE] ΓÜá∩╕Å Cannot validate booking role because "
++                f"accounts.json was not found at: {ACCOUNTS_FILE}"
++            )
++            return False
++
++        state_uid = state_file.stem.replace("state_", "")
++
++        accounts = json.loads(
++            ACCOUNTS_FILE.read_text(encoding="utf-8")
++        )
++
++        if not isinstance(accounts, list):
++            print("[STATE] ΓÜá∩╕Å accounts.json must contain a JSON list.")
++            return False
++
++        for account in accounts:
++            username = str(account.get("username", "")).strip()
++            role = str(account.get("role", "")).strip().upper()
++
++            if safe_id(username) == state_uid:
++                return role == "RESERVED_BOOKING"
++
++        print(
++            f"[STATE] ΓÜá∩╕Å No account matched state file "
++            f"'{state_file.name}'."
++        )
++        return False
++
++    except Exception as e:
++        print(f"[STATE] ΓÜá∩╕Å Could not validate account role: {e}")
++        return False
++
++
++def _send_remote_trigger(
++    remote_url: str,
++    state_file: Path,
++    updates: dict,
++) -> None:
++    """Send a booking trigger to the remote booking PC."""
++    try:
++        username = state_file.stem.replace("state_", "")
++
++        payload = json.dumps(
++            {
++                "username": username,
++                "updates": updates,
++            }
++        ).encode("utf-8")
++
++        request = urllib.request.Request(
++            remote_url,
++            data=payload,
++            headers={"Content-Type": "application/json"},
++            method="POST",
++        )
++
++        with urllib.request.urlopen(request, timeout=3) as response:
++            print(
++                f"[STATE] Γ£à Remote trigger sent for '{username}' "
++                f"(HTTP {response.status})"
++            )
++
++    except Exception as e:
++        print(
++            f"[STATE] Γ¥î Failed to send remote trigger "
++            f"to {remote_url}: {e}"
++        )
+ 
+ 
+ def update_state(state_file: Path, updates: dict) -> None:
+-    """Atomically read, merge updates, and write the state file using a cross-process lock."""
+-    # Only send remote triggers for actual booking triggers (pending=True),
+-    # not for every keep-alive or flag reset.
++    """
++    Atomically read, merge and write the state file.
++
++    A remote trigger is sent only when:
++    - pending is being set to True;
++    - REMOTE_TRIGGER_URL is configured;
++    - the account is marked RESERVED_BOOKING.
++    """
++
+     if updates.get("pending") is True:
+-        remote_url = os.environ.get("REMOTE_TRIGGER_URL")
++        remote_url = os.environ.get(
++            "REMOTE_TRIGGER_URL",
++            "",
++        ).strip()
++
+         if remote_url:
+-            import urllib.request
+-            import threading
+-            def send_remote():
+-                try:
+-                    username = state_file.stem.replace("state_", "")
+-                    payload = json.dumps({"username": username, "updates": updates}).encode("utf-8")
+-                    req = urllib.request.Request(
+-                        remote_url, data=payload, headers={'Content-Type': 'application/json'}, method='POST'
+-                    )
+-                    urllib.request.urlopen(req, timeout=3)
+-                except Exception as e:
+-                    print(f"[STATE] Γ¥î Failed to send remote trigger to {remote_url}: {e}")
+-            threading.Thread(target=send_remote, daemon=True).start()
++            if _is_reserved_booking_state(state_file):
++                threading.Thread(
++                    target=_send_remote_trigger,
++                    args=(remote_url, state_file, updates),
++                    daemon=True,
++                ).start()
++            else:
++                username = state_file.stem.replace("state_", "")
++                print(
++                    f"[STATE] ΓÅ¡∩╕Å Remote trigger blocked for "
++                    f"'{username}': account is not RESERVED_BOOKING."
++                )
+ 
+     lock_file = state_file.with_suffix(".lock")
++
+     if _acquire_lock(lock_file):
+         try:
+             state = read_state(state_file)
+@@ -96,16 +203,19 @@ def update_state(state_file: Path, updates: dict) -> None:
+             write_state(state_file, state)
+         finally:
+             _release_lock(lock_file)
++
+     else:
+-        # If lock fails, fallback to direct read-modify-write
++        # Fallback if the lock could not be obtained.
+         state = read_state(state_file)
+         state.update(updates)
+         write_state(state_file, state)
+ 
+ 
+ def get_state_file(username: str) -> Path:
+-    """Get the state file path for a given username."""
+-    from src.common.utils import safe_id
++    """Return the state-file path for a username."""
+     uid = safe_id(username)
+-    # State files live in the src/ directory alongside the runners
+-    return Path(__file__).resolve().parent.parent / f"state_{uid}.json"
++
++    return (
++        Path(__file__).resolve().parent.parent
++        / f"state_{uid}.json"
++    )
+\ No newline at end of file

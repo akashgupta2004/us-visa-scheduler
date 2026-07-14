@@ -9,6 +9,9 @@ Usage:
 import os
 import sys
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Force UTF-8 output so emojis don't crash on Windows when piped
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)

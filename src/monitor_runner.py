@@ -284,11 +284,10 @@ def main():
 
             log_slots_for_analysis(rows)
             ofc_buckets, consular_buckets = build_buckets(rows)
-
             # This limit applies only to non-RESERVED_BOOKING accounts.
             # Every eligible RESERVED_BOOKING account can still trigger.
             max_triggers = int(
-                os.getenv("MAX_MONITOR_TRIGGERS", "1")
+                os.getenv("MAX_MONITOR_TRIGGERS", "100")
             )
             current_triggers = 0
 
@@ -669,19 +668,14 @@ def main():
                 > ALERT_COOLDOWN_SECONDS
             ):
                 try:
-                    sent = send_slack_error(
-                        f"Error in slot monitor: {e}"
-                    )
-                    if sent:
-                        state["last_slack_error_time"] = (
-                            time.time()
-                        )
-                        save_state(state)
-                except Exception as slack_error:
-                    print(
-                        "❌ Failed to send Slack error "
-                        f"notification: {slack_error}"
-                    )
+                    err_str = str(e).lower()
+                    if "curl: (28)" not in err_str and "timed out" not in err_str and "timeout" not in err_str:
+                        sent = send_slack_error(f"Error in slot monitor: {e}")
+                        if sent:
+                            state["last_slack_error_time"] = time.time()
+                            save_state(state)
+                except Exception as slack_e:
+                    print(f"❌ Failed to send Slack error notification: {slack_e}")
             else:
                 print(
                     "⏳ Slack error skipped "

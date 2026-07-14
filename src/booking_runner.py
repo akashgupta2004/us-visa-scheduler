@@ -285,11 +285,37 @@ async def _broadcast_results(results: dict, customer: str):
                 )
                 continue
 
-            if acct_state.get("pending"):
-                log.info(
-                    f"⏭️ Skipping {acct_customer}: trigger already pending."
-                )
-                continue
+            remote_mode = bool(
+    os.getenv("REMOTE_TRIGGER_URL", "").strip()
+)
+
+# On the booking PC, pending still means the account is waiting to run.
+if not remote_mode and acct_state.get("pending"):
+    log.info(
+        f"⏭️ Skipping {acct_customer}: trigger already pending."
+    )
+    continue
+
+# On the polling PC, use a temporary cooldown instead of permanent pending.
+if remote_mode:
+    last_remote_trigger = float(
+        acct_state.get("remote_trigger_sent_at", 0) or 0
+    )
+
+    remote_trigger_cooldown = int(
+        os.getenv("REMOTE_TRIGGER_COOLDOWN_SECONDS", "300")
+    )
+
+    if (
+        last_remote_trigger
+        and time.time() - last_remote_trigger
+        < remote_trigger_cooldown
+    ):
+        log.info(
+            f"⏭️ Skipping {acct_customer}: remote trigger was "
+            f"sent recently."
+        )
+        continue
 
             action_mode = acct_config.get("action_mode", "SNIPER")
             action_type = (

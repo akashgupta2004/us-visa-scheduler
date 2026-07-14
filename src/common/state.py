@@ -163,16 +163,16 @@ def _send_remote_trigger(
             f"to {remote_url}: {e}"
         )
 
-
 def update_state(state_file: Path, updates: dict) -> None:
     """
-    Atomically read, merge and write the state file.
+    Update the local state.
 
-    A remote trigger is sent only when:
-    - pending is being set to True;
-    - REMOTE_TRIGGER_URL is configured;
-    - the account is marked RESERVED_BOOKING.
+    When REMOTE_TRIGGER_URL is configured, send pending triggers to the
+    booking PC but do not leave pending=True on the polling PC.
     """
+    updates_to_write = dict(updates)
+    remote_url = ""
+    should_send_remote = False
 
     if updates.get("pending") is True:
         remote_url = os.environ.get(
@@ -182,11 +182,13 @@ def update_state(state_file: Path, updates: dict) -> None:
 
         if remote_url:
             if _is_reserved_booking_state(state_file):
-                threading.Thread(
-                    target=_send_remote_trigger,
-                    args=(remote_url, state_file, updates),
-                    daemon=True,
-                ).start()
+                should_send_remote = True
+
+                # Do not leave the polling PC permanently pending.
+                updates_to_write["pending"] = False
+                updates_to_write["remote_trigger_sent_at"] = time.time()
+                updates_to_write["remote_trigger_status"] = "sent_to_booking_pc"
+
             else:
                 username = state_file.stem.replace("state_", "")
                 print(
@@ -199,18 +201,22 @@ def update_state(state_file: Path, updates: dict) -> None:
     if _acquire_lock(lock_file):
         try:
             state = read_state(state_file)
-            state.update(updates)
+            state.update(updates_to_write)
             write_state(state_file, state)
         finally:
             _release_lock(lock_file)
-
     else:
-        # Fallback if the lock could not be obtained.
         state = read_state(state_file)
-        state.update(updates)
+        state.update(updates_to_write)
         write_state(state_file, state)
 
-
+    # Start remote sending only after local state has been written.
+    if should_send_remote:
+        threading.Thread(
+            target=_send_remote_trigger,
+            args=(remote_url, state_file, updates),
+            daemon=True,
+        ).start()
 def get_state_file(username: str) -> Path:
     """Return the state-file path for a username."""
     uid = safe_id(username)

@@ -18,12 +18,21 @@ def test_trigger_gap():
     print("Testing RESERVED_BOOKING trigger gap...")
     state_dir = Path(__file__).resolve().parent
     
-    # Setup mock customers
-    customers = [
-        {"username": "test1", "role": "RESERVED_BOOKING"},
-        {"username": "test2", "role": "RESERVED_BOOKING"},
-        {"username": "test3", "role": "RESERVED_BOOKING"}
-    ]
+    # Load real accounts from accounts.json to pass state.py validation
+    try:
+        from src.common.config import ACCOUNTS_FILE
+        all_accounts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+        # Grab up to 3 RESERVED_BOOKING accounts for testing
+        customers = [
+            {"username": acc["username"], "role": "RESERVED_BOOKING"}
+            for acc in all_accounts if acc.get("role") == "RESERVED_BOOKING"
+        ][:3]
+        if not customers:
+            print("❌ No RESERVED_BOOKING accounts found in accounts.json to test!")
+            sys.exit(1)
+    except Exception as e:
+        print(f"❌ Failed to load accounts.json: {e}")
+        sys.exit(1)
     
     # Initialize empty state files
     for c in customers:

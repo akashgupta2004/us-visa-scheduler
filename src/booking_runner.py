@@ -279,6 +279,18 @@ async def _broadcast_results(results: dict, customer: str):
             # Do not overwrite a trigger already being processed.
             acct_state = _read_state(acct_state_file)
 
+            if acct_state.get("completed"):
+                log.info(
+                    f"⏭️ Skipping {acct_customer}: booking already completed."
+                )
+                continue
+
+            if acct_state.get("waitingForConsular"):
+                log.info(
+                    f"⏭️ Skipping {acct_customer}: already in wait mode for Consular."
+                )
+                continue
+
             if acct_state.get("extension_running"):
                 log.info(
                     f"⏭️ Skipping {acct_customer}: booking is already running."

@@ -179,8 +179,9 @@ def update_state(state_file: Path, updates: dict) -> None:
             "REMOTE_TRIGGER_URL",
             "",
         ).strip()
+        laptop_role = os.environ.get("LAPTOP_ROLE", "").strip().upper()
 
-        if remote_url:
+        if remote_url and laptop_role != "BOOKING":
             if _is_reserved_booking_state(state_file):
                 should_send_remote = True
 

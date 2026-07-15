@@ -3,7 +3,7 @@
   Orchestrator — Multi-Account Visa Bot Manager
   ─────────────────────────────────────────────────────────
   HOW TO USE:
-      python main.py              — Start the orchestrator (all accounts)
+      python main.py- Start the orchestrator (all accounts)
       python main.py --no-monitor — Start without the slot monitor
 
   Reads accounts.json and for each account:

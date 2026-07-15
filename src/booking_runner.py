@@ -661,6 +661,14 @@ async def run(cdp_port: int, customer: str, username: str):
                     _update_state(state_file, {"extension_running": True, "pending": False})
                     log.info(f"📥 Pending trigger detected for '{customer}'.")
 
+                    try:
+                        file_age = time.time() - os.path.getmtime(state_file)
+                        if file_age > 30.0:
+                            log.warning(f"⏭️ Skipping trigger: it is {file_age:.1f} seconds old (> 30s limit).")
+                            continue
+                    except Exception as e:
+                        log.warning(f"Could not check trigger file age: {e}")
+
                     trigger_ts = state.get("trigger_timestamp")
                     if trigger_ts:
                         delay = time.time() - trigger_ts

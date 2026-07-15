@@ -1,4 +1,4 @@
-"""
+n"""
 =============================================================
   Orchestrator — Multi-Account Visa Bot Manager
   ─────────────────────────────────────────────────────────
@@ -322,13 +322,13 @@ def main() -> None:
         customer = session["account"]["customer_name"]
 
         if code == 42:
-            log(f"⚠️  booking:{customer} encountered 429 Too Many Requests. Restarting in 45 minutes...")
+            log(f"⚠️  booking:{customer} encountered 429 Too Many Requests. Restarting in 15 minutes...")
             # Set an explicit flag so delayed_restart can distinguish a
             # 429 cooldown from a manual STOP.
             session["rate_limited"] = True
 
             def delayed_restart(sess_dict):
-                time.sleep(45 * 60)
+                time.sleep(15 * 60)
                 c_name = sess_dict["account"]["customer_name"]
                 # If something else already brought the bot back up, skip
                 if sess_dict.get("login_proc") is not None or sess_dict.get("booking_proc") is not None:
@@ -340,7 +340,7 @@ def main() -> None:
                     log(f"⏭️  Skipping delayed restart for '{c_name}' — was manually stopped.")
                     sess_dict["rate_limited"] = False
                     return
-                log(f"🔄 Restarting bot for '{c_name}' after 45m delay ...")
+                log(f"🔄 Restarting bot for '{c_name}' after 15m delay ...")
                 sess_dict["rate_limited"] = False
                 kill_chrome_by_port(sess_dict["cdp_port"])
                 time.sleep(4)

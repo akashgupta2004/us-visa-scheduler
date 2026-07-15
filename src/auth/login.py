@@ -70,11 +70,10 @@ async def wait_for_waiting_room(page: Page, log: logging.Logger, timeout_minutes
             elif await cf_iframe.locator(".ctp-checkbox-label").count() > 0:
                 await cf_iframe.locator(".ctp-checkbox-label").first.click(timeout=1000)
                 log.info("Clicked Cloudflare Turnstile label.")
-            elif await page.locator("iframe[src*='challenge']").count() > 0:
-                await page.locator("iframe[src*='challenge']").first.click(timeout=1000)
-                log.info("Clicked Cloudflare challenge iframe directly.")
+            elif await cf_iframe.locator("span.mark").count() > 0:
+                await cf_iframe.locator("span.mark").first.click(timeout=1000)
+                log.info("Clicked Cloudflare challenge mark.")
             elif await cf_input.count() > 0:
-                # Often hidden behind closed shadow DOM, click the wrapper div
                 await cf_input.first.locator("..").click(position={"x": 30, "y": 30}, timeout=1000)
                 log.info("Clicked Cloudflare Turnstile widget wrapper.")
         except Exception:

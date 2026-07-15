@@ -10,7 +10,7 @@
     1. Assigns a unique Chrome CDP port (9222, 9223, …)
     2. Spawns login_runner.py  — opens Chrome, logs in, stays open
     3. When login_runner.py prints [READY], spawns booking_runner.py
-       — connects to that same Chrome, parks on the portal
+       —  connects to that same Chrome, parks on the portal
          and watches for trigger_<customer>.json
 
   Also runs monitor_runner.py in the background

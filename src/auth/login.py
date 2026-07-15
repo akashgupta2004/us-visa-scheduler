@@ -89,7 +89,7 @@ async def wait_for_waiting_room(page: Page, log: logging.Logger, timeout_minutes
         except Exception:
             log.debug("In waiting room / Cloudflare challenge — waiting for auto-redirect …")
 
-        await asyncio.sleep(5)
+        await asyncio.sleep(1.5)
 
     raise TimeoutError("Timed out waiting for waiting room to clear.")
 

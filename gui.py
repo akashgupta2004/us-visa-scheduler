@@ -1029,6 +1029,19 @@ class App(tk.Tk):
                  insertbackground=ENTRY_FG, relief="flat",
                  highlightbackground=BORDER, highlightthickness=1).pack(side=tk.LEFT, padx=5)
 
+        ttk.Label(settings_frame, text="⚡ Instant:", style="Surface.TLabel",
+                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=(20, 5), pady=10)
+        self.var_instant_booking = tk.BooleanVar(value=True)
+        ttk.Checkbutton(settings_frame, variable=self.var_instant_booking, style="Surface.TCheckbutton").pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(settings_frame, text="💤 Rest (hr):", style="Surface.TLabel",
+                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=(20, 5), pady=10)
+        self.var_rest_hours = tk.StringVar(value="1.0")
+        tk.Entry(settings_frame, textvariable=self.var_rest_hours, width=5,
+                 font=("Consolas", 11), bg=ENTRY_BG, fg=ENTRY_FG,
+                 insertbackground=ENTRY_FG, relief="flat",
+                 highlightbackground=BORDER, highlightthickness=1).pack(side=tk.LEFT, padx=5)
+
         log_frame = ttk.Frame(self.tab_polling, style="Surface.TFrame")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 10))
 
@@ -1055,9 +1068,11 @@ class App(tk.Tk):
                 json.dump({
                     "is_active": True,
                     "cooldown": int(self.var_cooldown.get()),
-                    "gap": int(self.var_gap.get())
+                    "gap": int(self.var_gap.get()),
+                    "instant_booking": self.var_instant_booking.get(),
+                    "rest_hours": float(self.var_rest_hours.get())
                 }, f)
-            self._log_poll(f"[GUI] ✅ Polling activated. Cooldown={self.var_cooldown.get()}s, Gap={self.var_gap.get()}s. Waiting for first poll cycle...")
+            self._log_poll(f"[GUI] ✅ Polling activated. Cooldown={self.var_cooldown.get()}s, Gap={self.var_gap.get()}s, Instant Booking={'ON' if self.var_instant_booking.get() else 'OFF'}, Rest={self.var_rest_hours.get()}h. Waiting for first poll cycle...")
         except Exception as e:
             self._log_poll(f"[GUI] ❌ Error activating polling: {e}")
 

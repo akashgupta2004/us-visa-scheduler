@@ -452,7 +452,7 @@ def _looks_like_expired_session(result: dict) -> bool:
     return expired > 0 and expired == len(results)
 
 
-async def _try_background_poll(page, customer: str, username: str, last_background_poll: float, last_poll_debug: float) -> tuple[float, float]:
+async def _try_background_poll(page, customer: str, username: str, last_background_poll: float, last_poll_debug: float) -> tuple[float, float, bool]:
     """Execute background API polling if permitted by global limits and personal cooldowns.
 
     Returns (last_background_poll, last_poll_debug). Raises SessionExpiredError
@@ -555,6 +555,62 @@ async def _try_background_poll(page, customer: str, username: str, last_backgrou
 
                     if dates_found:
                         await _broadcast_results(results, customer)
+                        
+                        # --- SELF-BOOKING LOGIC ---
+                        uid = safe_id(username)
+                        state_file = Path(__file__).parent / f"state_{uid}.json"
+                        rest_until = 0
+                        instant_booking = True
+                        if state_file.exists():
+                            try:
+                                with open(state_file, "r") as f:
+                                    rest_until = json.load(f).get("rest_until", 0)
+                            except Exception:
+                                pass
+                                
+                        polling_state_file = Path(__file__).parent / "polling_state.json"
+                        if polling_state_file.exists():
+                            try:
+                                with open(polling_state_file, "r") as f:
+                                    instant_booking = json.load(f).get("instant_booking", True)
+                            except Exception:
+                                pass
+                        
+                        # Only attempt self-booking if instant booking is enabled AND we are NOT in a rest period
+                        if instant_booking and not (rest_until and time.time() < rest_until):
+                            if ACCOUNTS_FILE.exists():
+                                all_accounts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+                                my_config = next((acc for acc in all_accounts if acc.get("customer_name") == customer or acc.get("username") == username), None)
+                                
+                                if my_config:
+                                    matched, matched_city, earliest_date = _match_polled_ofc_dates(results, my_config)
+                                    if matched:
+                                        print(f"[POLLING-RESULT] ⚡ Self-booking triggered for '{customer}'!", flush=True)
+                                        action_mode = str(my_config.get("action_mode", "SNIPER")).strip().upper()
+                                        action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
+                                        trigger_key = f"background|{safe_id(username)}|{matched_city.upper()}|{earliest_date}|{action_type}"
+                                        
+                                        trigger_updates = {
+                                            "extension_running": False,
+                                            "pending": True,
+                                            "trigger_timestamp": time.time(),
+                                            "trigger_key": trigger_key,
+                                            "action_type": action_type,
+                                            "ofcCities": my_config.get("ofcCities", []),
+                                            "ofcPriorityCity": matched_city,
+                                            "ofcStartDate": my_config.get("ofcStartDate", ""),
+                                            "ofcEndDate": my_config.get("ofcEndDate", ""),
+                                            "consularCities": my_config.get("consularCities", []),
+                                            "consularPriorityCity": my_config.get("consularPriorityCity", ""),
+                                            "consularStartDate": my_config.get("consularStartDate", ""),
+                                            "consularEndDate": my_config.get("consularEndDate", ""),
+                                            "customer_name": customer,
+                                            "prevent_immediate": my_config.get("prevent_immediate", False),
+                                            "multiPerson": my_config.get("multiPerson", False)
+                                        }
+                                        _update_state(state_file, trigger_updates)
+                                        return last_background_poll, last_poll_debug, True
+                                    
                 else:
                     print(f"[POLLING-RESULT] {res}", flush=True)
             except SessionExpiredError:
@@ -566,7 +622,7 @@ async def _try_background_poll(page, customer: str, username: str, last_backgrou
             except Exception as e:
                 print(f"[POLLING-RESULT] Error: {e}", flush=True)
 
-    return last_background_poll, last_poll_debug
+    return last_background_poll, last_poll_debug, False
 
 # ─── Main runner loop ─────────────────────────────────────────────────────────
 
@@ -652,10 +708,19 @@ async def run(cdp_port: int, customer: str, username: str):
 
         while True:
             try:
-                # ── Check for pending trigger FIRST ───────────────────────────────
+                # ── Check Rest Period FIRST ───────────────────────────────
                 state = _read_state(state_file)
+                rest_until = state.get("rest_until", 0)
+                is_resting = bool(rest_until and time.time() < rest_until)
+                
+                # If resting and pending, clear the pending state so we don't block polling
+                if is_resting and state.get("pending"):
+                    log.info("💤 Account is in a rest period. Ignoring and clearing pending booking trigger.")
+                    _update_state(state_file, {"pending": False})
+                    state["pending"] = False
 
-                if state.get("pending"):
+                # ── Check for pending trigger ───────────────────────────────
+                if state.get("pending") and not is_resting:
                     print("\n" + "=" * 60) # Visual break
                     # Mark extension as running before we start
                     _update_state(state_file, {"extension_running": True, "pending": False})
@@ -808,6 +873,20 @@ async def run(cdp_port: int, customer: str, username: str):
                                     "bookedOfcDate": None,
                                     "waitStartTime": None
                                 })
+                                
+                            # Enter rest period
+                            rest_hours = 1
+                            polling_state_file = Path(__file__).parent / "polling_state.json"
+                            if polling_state_file.exists():
+                                try:
+                                    with open(polling_state_file, "r") as f:
+                                        rest_hours = float(json.load(f).get("rest_hours", 1))
+                                except Exception:
+                                    pass
+                                    
+                            rest_until = time.time() + (rest_hours * 3600)
+                            _update_state(state_file, {"rest_until": rest_until})
+                            log.warning(f"💤 Account '{customer}' entering rest period for {rest_hours} hour(s) until {datetime.fromtimestamp(rest_until).strftime('%H:%M:%S')}")
 
                     # Mark extension as done
                     _update_state(state_file, {"extension_running": False})
@@ -852,9 +931,11 @@ async def run(cdp_port: int, customer: str, username: str):
 
                 if not state.get("waitingForConsular") and not state.get("pending") and current_account_role != "RESERVED_BOOKING":
                     try:
-                        last_background_poll, last_poll_debug = await _try_background_poll(
+                        last_background_poll, last_poll_debug, self_triggered = await _try_background_poll(
                             page, customer, username, last_background_poll, last_poll_debug
                         )
+                        if self_triggered:
+                            continue
                     except SessionExpiredError:
                         # Background poll detected a dead session (OFC API
                         # returned login HTML). Recover now instead of waiting

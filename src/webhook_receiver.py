@@ -47,7 +47,7 @@ class WebhookReceiver(BaseHTTPRequestHandler):
         # Suppress default HTTP logging to keep console clean
         pass
 
-def run(port=5000):
+def run(port=8000):
     server_address = ('0.0.0.0', port)
     httpd = HTTPServer(server_address, WebhookReceiver)
     print(f"============================================================")

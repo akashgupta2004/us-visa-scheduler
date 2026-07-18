@@ -880,10 +880,12 @@ async def run(cdp_port: int, customer: str, username: str):
                                 try:
                                     _accts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
                                     for _ac in _accts:
-                                        if _ac.get("customer_name") == customer and _ac.get("username") == username:
+                                        ac_uname = _ac.get("username", "")
+                                        # Use username to match; if not present, fallback to customer_name matching
+                                        if (ac_uname and ac_uname == username) or (not ac_uname and _ac.get("customer_name") == customer):
                                             if _ac.get("role") == "RESERVED_BOOKING":
                                                 is_polling_account = False
-                                                break
+                                            break
                                 except Exception:
                                     pass
 

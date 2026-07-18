@@ -1069,6 +1069,7 @@ class App(tk.Tk):
             pass
         self.txt_poll_log.see(tk.END)
         self.txt_poll_log.config(state=tk.DISABLED)
+        self._write_log_to_file(text)
 
     def _start_polling(self):
         self.btn_start_poll.state(["disabled"])

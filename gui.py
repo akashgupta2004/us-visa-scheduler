@@ -743,6 +743,13 @@ class App(tk.Tk):
     def _log(self, text):
         self.txt_log.config(state=tk.NORMAL)
         self.txt_log.insert(tk.END, text + "\n")
+        # Keep only the last 5000 lines to prevent UI freezing
+        try:
+            line_count = int(self.txt_log.index('end-1c').split('.')[0])
+            if line_count > 5000:
+                self.txt_log.delete('1.0', f'{line_count - 5000}.0')
+        except Exception:
+            pass
         if getattr(self, "var_autoscroll", None) and self.var_autoscroll.get():
             self.txt_log.see(tk.END)
         self.txt_log.config(state=tk.DISABLED)
@@ -1054,6 +1061,12 @@ class App(tk.Tk):
     def _log_poll(self, text):
         self.txt_poll_log.config(state=tk.NORMAL)
         self.txt_poll_log.insert(tk.END, text + "\n")
+        try:
+            line_count = int(self.txt_poll_log.index('end-1c').split('.')[0])
+            if line_count > 5000:
+                self.txt_poll_log.delete('1.0', f'{line_count - 5000}.0')
+        except Exception:
+            pass
         self.txt_poll_log.see(tk.END)
         self.txt_poll_log.config(state=tk.DISABLED)
 

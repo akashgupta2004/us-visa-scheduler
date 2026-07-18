@@ -138,6 +138,14 @@ async def connect_to_chrome(playwright, cdp_port: int, log: logging.Logger, hand
                 pass
         if not page:
             page = context.pages[-1]
+            
+        # Surgical Fix: Close all other about:blank tabs
+        for p in context.pages:
+            try:
+                if p != page and p.url == "about:blank":
+                    await p.close()
+            except Exception:
+                pass
     else:
         page = await context.new_page()
 

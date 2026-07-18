@@ -874,19 +874,34 @@ async def run(cdp_port: int, customer: str, username: str):
                                     "waitStartTime": None
                                 })
                                 
-                            # Enter rest period
-                            rest_hours = 1
-                            polling_state_file = Path(__file__).parent / "polling_state.json"
-                            if polling_state_file.exists():
+                            # Enter rest period (only for POLLING accounts)
+                            is_polling_account = True
+                            if ACCOUNTS_FILE.exists():
                                 try:
-                                    with open(polling_state_file, "r") as f:
-                                        rest_hours = float(json.load(f).get("rest_hours", 1))
+                                    _accts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
+                                    for _ac in _accts:
+                                        if _ac.get("customer_name") == customer and _ac.get("username") == username:
+                                            if _ac.get("role") == "RESERVED_BOOKING":
+                                                is_polling_account = False
+                                                break
                                 except Exception:
                                     pass
-                                    
-                            rest_until = time.time() + (rest_hours * 3600)
-                            _update_state(state_file, {"rest_until": rest_until})
-                            log.warning(f"💤 Account '{customer}' entering rest period for {rest_hours} hour(s) until {datetime.fromtimestamp(rest_until).strftime('%H:%M:%S')}")
+
+                            if is_polling_account:
+                                rest_hours = 1
+                                polling_state_file = Path(__file__).parent / "polling_state.json"
+                                if polling_state_file.exists():
+                                    try:
+                                        with open(polling_state_file, "r") as f:
+                                            rest_hours = float(json.load(f).get("rest_hours", 1))
+                                    except Exception:
+                                        pass
+                                        
+                                rest_until = time.time() + (rest_hours * 3600)
+                                _update_state(state_file, {"rest_until": rest_until})
+                                log.warning(f"💤 Polling Account '{customer}' entering rest period for {rest_hours} hour(s) until {datetime.fromtimestamp(rest_until).strftime('%H:%M:%S')}")
+                            else:
+                                log.info(f"ℹ️ VIP Booking Account '{customer}' failed booking, but skipping rest period since it is not a polling account.")
 
                     # Mark extension as done
                     _update_state(state_file, {"extension_running": False})

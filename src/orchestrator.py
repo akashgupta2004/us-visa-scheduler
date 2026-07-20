@@ -60,9 +60,22 @@ def load_accounts() -> list[dict]:
     return _load_accounts()
 
 
+def _write_log_to_file(line: str) -> None:
+    if os.environ.get("FROM_GUI") == "1":
+        return
+    log_dir = Path(__file__).resolve().parent.parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+    try:
+        with open(log_dir / "orchestrator.log", "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
 def log(msg: str) -> None:
     ts = time.strftime("%H:%M:%S")
-    print(f"[{ts}] [ORCHESTRATOR] {msg}", flush=True)
+    out = f"[{ts}] [ORCHESTRATOR] {msg}"
+    print(out, flush=True)
+    _write_log_to_file(out)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -170,9 +183,13 @@ def relay_output(proc: subprocess.Popen, label: str, ready_event: threading.Even
             line = line.rstrip()
             if label == "monitor":
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
-                print(f"[monitor] {ts} {line}", flush=True)
+                out = f"[monitor] {ts} {line}"
+                print(out, flush=True)
+                _write_log_to_file(out)
             else:
-                print(f"[{label}] {line}", flush=True)
+                out = f"[{label}] {line}"
+                print(out, flush=True)
+                _write_log_to_file(out)
             if ready_event and "[READY]" in line:
                 ready_event.set()
     except Exception:

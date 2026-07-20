@@ -803,6 +803,7 @@ class App(tk.Tk):
         
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
+        env["FROM_GUI"] = "1"
         
         # Ensure absolute imports work (e.g. from src.auth...)
         if "PYTHONPATH" in env:

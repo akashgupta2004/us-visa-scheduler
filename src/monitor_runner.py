@@ -232,7 +232,7 @@ def load_customers():
             "consular_end":    parse_date(consular_end),
             "prevent_immediate": entry.get("prevent_immediate", False),
             "multiPerson": entry.get("multiPerson", False),
-            "role": entry.get("role", "")
+            "role": entry.get("role", "POLLING_ONLY")
         })
 
     return customers

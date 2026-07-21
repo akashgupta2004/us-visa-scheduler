@@ -10,7 +10,7 @@ HEADERS = {
     "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
     "extversion": "4.7.0",
     "origin": "chrome-extension://beepaenfejnphdgnkmccjcfiieihhogl",
-    "x-api-key": "9EHYC6",
+    "x-api-key": "4XYRAN",
 }
 # 4XYRAN
 # 9EHYC6

@@ -1130,6 +1130,14 @@ class App(tk.Tk):
         
         ttk.Label(env_frame, text="Example: http://100.x.x.x:8000/trigger\nSet this on the Polling laptop to point to the Booking laptop's Tailscale IP.", font=("Segoe UI", 9), foreground="#94a3b8", style="Surface.TLabel").pack(anchor="w", padx=20)
         
+        ttk.Label(env_frame, text="CVS_API_KEYS (CheckVisaSlots):", style="Subhead.TLabel").pack(anchor="w", padx=20, pady=(15,0))
+        
+        self.var_cvs_api_keys = tk.StringVar()
+        ent_cvs_keys = tk.Entry(env_frame, textvariable=self.var_cvs_api_keys, font=("Consolas", 11), bg=ENTRY_BG, fg=ENTRY_FG, insertbackground=ENTRY_FG, relief="flat", highlightbackground=BORDER, highlightthickness=1)
+        ent_cvs_keys.pack(fill=tk.X, padx=20, pady=(5,5))
+        
+        ttk.Label(env_frame, text="Comma-separated API keys. E.g. key1,key2,key3. Used by the background pollers to rotate keys.", font=("Segoe UI", 9), foreground="#94a3b8", style="Surface.TLabel").pack(anchor="w", padx=20)
+        
         self._load_settings()
 
     def _load_settings(self):
@@ -1141,6 +1149,8 @@ class App(tk.Tk):
                         self.var_remote_url.set(line.strip().split("=", 1)[1])
                     elif line.startswith("LAPTOP_ROLE="):
                         self.var_laptop_role.set(line.strip().split("=", 1)[1])
+                    elif line.startswith("CVS_API_KEYS="):
+                        self.var_cvs_api_keys.set(line.strip().split("=", 1)[1])
 
     def _on_save_settings(self):
         env_path = BASE_DIR / ".env"
@@ -1151,9 +1161,11 @@ class App(tk.Tk):
                 
         new_url = self.var_remote_url.get().strip()
         new_role = self.var_laptop_role.get().strip()
+        new_cvs_keys = self.var_cvs_api_keys.get().strip()
         
         found_url = False
         found_role = False
+        found_cvs_keys = False
         for i, line in enumerate(lines):
             if line.startswith("REMOTE_TRIGGER_URL="):
                 lines[i] = f"REMOTE_TRIGGER_URL={new_url}\n"
@@ -1161,11 +1173,16 @@ class App(tk.Tk):
             elif line.startswith("LAPTOP_ROLE="):
                 lines[i] = f"LAPTOP_ROLE={new_role}\n"
                 found_role = True
+            elif line.startswith("CVS_API_KEYS="):
+                lines[i] = f"CVS_API_KEYS={new_cvs_keys}\n"
+                found_cvs_keys = True
                 
         if not found_url:
             lines.append(f"REMOTE_TRIGGER_URL={new_url}\n")
         if not found_role:
             lines.append(f"LAPTOP_ROLE={new_role}\n")
+        if not found_cvs_keys:
+            lines.append(f"CVS_API_KEYS={new_cvs_keys}\n")
             
         with open(env_path, "w", encoding="utf-8") as f:
             f.writelines(lines)

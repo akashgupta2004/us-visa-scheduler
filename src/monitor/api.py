@@ -2,6 +2,7 @@ from curl_cffi import requests
 from typing import List, Dict
 import time
 import re
+import os
 from pathlib import Path
 
 URL = "https://app.checkvisaslots.com/slots/v3"
@@ -12,16 +13,27 @@ HEADERS = {
     "origin": "chrome-extension://beepaenfejnphdgnkmccjcfiieihhogl",
     "x-api-key": "4XYRAN",
 }
-# 4XYRAN
-# 9EHYC6
 REQUEST_TIMEOUT = 15
 
 # Tracks when we last warned about low quota (module-level, not global hack)
 _last_quota_alert: float = 0.0
 
+_cvs_api_keys = [k.strip() for k in os.getenv("CVS_API_KEYS", "4XYRAN").split(",") if k.strip()]
+_current_key_idx = 0
+
+def get_next_api_key() -> str:
+    global _current_key_idx
+    if not _cvs_api_keys:
+        return "4XYRAN"
+    key = _cvs_api_keys[_current_key_idx % len(_cvs_api_keys)]
+    _current_key_idx += 1
+    return key
+
 def fetch_rows() -> List[Dict]:
     global _last_quota_alert
     try:
+        next_key = get_next_api_key()
+        HEADERS["x-api-key"] = next_key
         # impersonate="chrome120" helps bypass AWS WAF challenges (HTTP 202)
         response = requests.get(URL, headers=HEADERS, timeout=REQUEST_TIMEOUT, impersonate="chrome120")
 

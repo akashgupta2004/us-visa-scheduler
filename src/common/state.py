@@ -218,6 +218,68 @@ def update_state(state_file: Path, updates: dict) -> None:
             args=(remote_url, state_file, updates),
             daemon=True,
         ).start()
+def try_queue_local_trigger(
+    state_file: Path,
+    updates: dict,
+) -> tuple[bool, str]:
+    """
+    Atomically queue a local booking trigger.
+
+    Blocks booking when the account:
+    - is completed;
+    - is resting;
+    - is already booking;
+    - already has a pending trigger.
+    """
+    if updates.get("pending") is not True:
+        return False, "invalid_trigger"
+
+    lock_file = state_file.with_suffix(".lock")
+
+    # Do not use an unlocked fallback for trigger creation.
+    # That could allow CVS and self-polling to queue simultaneously.
+    if not _acquire_lock(lock_file):
+        return False, "lock_timeout"
+
+    try:
+        state = read_state(state_file)
+        now = time.time()
+
+        if state.get("completed"):
+            return False, "completed"
+
+        try:
+            rest_until = float(state.get("rest_until", 0) or 0)
+        except Exception:
+            rest_until = 0
+
+        if rest_until > now:
+            remaining = int(rest_until - now)
+            return False, f"resting:{remaining}"
+
+        if state.get("extension_running"):
+            return False, "running"
+
+        if state.get("pending"):
+            return False, "pending"
+
+        safe_updates = dict(updates)
+
+        # A trigger producer must never overwrite the runner's busy flag.
+        safe_updates.pop("extension_running", None)
+
+        safe_updates["pending"] = True
+        safe_updates["trigger_timestamp"] = (
+            safe_updates.get("trigger_timestamp") or now
+        )
+
+        state.update(safe_updates)
+        write_state(state_file, state)
+
+        return True, "queued"
+
+    finally:
+        _release_lock(lock_file)
 def get_state_file(username: str) -> Path:
     """Return the state-file path for a username."""
     uid = safe_id(username)

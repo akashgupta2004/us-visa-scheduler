@@ -29,7 +29,10 @@ from src.monitor.matcher import build_buckets, find_valid_ofc_slot, find_valid_c
 from src.monitor.notifier import log_slots_for_analysis
 from src.common.utils import safe_id
 from src.common.config import ACCOUNTS_FILE, SLOT_ALERT_STATE_FILE, normalize_city, parse_date
-from src.common.state import read_state as _read_bot_state, update_state as _update_bot_state
+from src.common.state import (
+    read_state as _read_bot_state,
+    try_queue_local_trigger,
+)
 from slack import format_slack_message, send_slack, send_slack_error
 
 ALERT_COOLDOWN_SECONDS = 15 * 60
@@ -38,8 +41,8 @@ TRIGGER_COOLDOWN_SECONDS = int(
 )
 ERROR_BACKOFF_SECONDS = 40
 
-POLL_MIN_SECONDS = 10
-POLL_MAX_SECONDS = 15
+POLL_MIN_SECONDS = 20
+POLL_MAX_SECONDS = 25
 RESERVED_TRIGGER_STAGGER_SECONDS = float(
     os.getenv("RESERVED_TRIGGER_STAGGER_SECONDS", "1.0")
 )
@@ -91,89 +94,65 @@ def _send_alert_if_due(alert_key, state, message, success_message):
 
 def _write_trigger_if_idle(
     state_file,
-    bot_state,
     customer_name,
     trigger_updates,
     current_triggers,
     max_triggers,
-    role,
 ):
-    """Queue a trigger without allowing stale polling-PC state to block it."""
-    normalized_role = str(role or "").strip().upper()
-    remote_mode = bool(
-        os.getenv("REMOTE_TRIGGER_URL", "").strip()
-    )
+    """
+    Queue a CVS trigger only when the account is eligible.
 
-    if (
-        normalized_role != "RESERVED_BOOKING"
-        and current_triggers >= max_triggers
-    ):
+    max_triggers=0 means unlimited.
+    """
+    if max_triggers > 0 and current_triggers >= max_triggers:
         print(
-            f"⏭️ Skipping {customer_name}: max concurrent triggers "
+            f"⏭️ Skipping {customer_name}: maximum CVS triggers "
             f"({max_triggers}) reached for this cycle."
         )
-        return current_triggers
+        return current_triggers, False
 
-    from src.common.state import read_state as _reread
-    bot_state = _reread(state_file)
+    queued, reason = try_queue_local_trigger(
+        state_file,
+        trigger_updates,
+    )
 
-    if not remote_mode and bot_state.get("extension_running"):
-        print(
-            f"⏭️ Extension already running for '{customer_name}' — skipping."
-        )
-        return current_triggers
-    # On the booking PC, pending means the runner still has work.
-    # On the polling PC, state.py sends remotely and clears local pending.
-    if not remote_mode and bot_state.get("pending"):
-        print(
-            f"⏭️ Pending trigger already exists for "
-            f"'{customer_name}' — skipping to allow execution."
-        )
-        return current_triggers
-
-    # In remote mode, suppress only a repeat of the same account/slot/action.
-    # A different slot can still trigger immediately.
-    if remote_mode:
-        incoming_trigger_key = str(
-            trigger_updates.get("trigger_key", "")
-        )
-        previous_trigger_key = str(
-            bot_state.get("trigger_key", "")
-        )
-        previous_trigger_time = float(
-            bot_state.get("remote_trigger_sent_at", 0)
-            or bot_state.get("trigger_timestamp", 0)
-            or 0
-        )
-
-        if (
-            incoming_trigger_key
-            and incoming_trigger_key == previous_trigger_key
-            and previous_trigger_time
-            and time.time() - previous_trigger_time
-            < TRIGGER_COOLDOWN_SECONDS
-        ):
-            remaining = int(
-                TRIGGER_COOLDOWN_SECONDS
-                - (time.time() - previous_trigger_time)
-            )
+    if not queued:
+        if reason == "completed":
             print(
-                f"⏭️ Skipping {customer_name}: same remote trigger "
-                f"was sent recently ({max(remaining, 0)}s remaining)."
+                f"⏭️ Skipping {customer_name}: booking already completed."
             )
-            return current_triggers
+        elif reason == "running":
+            print(
+                f"⏭️ Skipping {customer_name}: booking is already running."
+            )
+        elif reason == "pending":
+            print(
+                f"⏭️ Skipping {customer_name}: another trigger is pending."
+            )
+        elif reason.startswith("resting:"):
+            try:
+                remaining = int(reason.split(":", 1)[1])
+            except Exception:
+                remaining = 0
+            print(
+                f"💤 Skipping {customer_name}: booking rest active "
+                f"for another {remaining} second(s)."
+            )
+        elif reason == "lock_timeout":
+            print(
+                f"⚠️ Skipping {customer_name}: could not safely lock "
+                f"the state file."
+            )
+        else:
+            print(
+                f"⏭️ Skipping {customer_name}: trigger not queued "
+                f"({reason})."
+            )
 
-    _update_bot_state(state_file, trigger_updates)
-    print(f"✅ Trigger queued for '{customer_name}'.")
+        return current_triggers, False
 
-    if normalized_role == "RESERVED_BOOKING":
-        time.sleep(max(RESERVED_TRIGGER_STAGGER_SECONDS, 0))
-    else:
-        time.sleep(random.uniform(1.0, 2.0))
-        current_triggers += 1
-
-    return current_triggers
-
+    print(f"✅ CVS trigger queued for '{customer_name}'.")
+    return current_triggers + 1, True
 
 def load_customers():
     if not ACCOUNTS_FILE.exists():
@@ -284,12 +263,12 @@ def main():
 
             log_slots_for_analysis(rows)
             ofc_buckets, consular_buckets = build_buckets(rows)
-            # This limit applies only to non-RESERVED_BOOKING accounts.
-            # Every eligible RESERVED_BOOKING account can still trigger.
+            # Zero means every matching eligible account can trigger.
             max_triggers = int(
-                os.getenv("MAX_MONITOR_TRIGGERS", "100")
+                os.getenv("MAX_MONITOR_TRIGGERS", "0")
             )
             current_triggers = 0
+            alert_jobs = []
 
             for customer in customers:
                 customer_name = customer["customer_name"]
@@ -304,9 +283,6 @@ def main():
                 bot_state = _read_bot_state(state_file)
 
                 if bot_state.get("completed"):
-                    continue
-
-                if role == "POLLING_ONLY":
                     continue
 
                 effective_ofc_start, effective_consular_start = (
@@ -397,34 +373,34 @@ def main():
                     }
 
                     # Queue first. Slack must never delay the booking trigger.
-                    current_triggers = _write_trigger_if_idle(
+                    current_triggers, queued = _write_trigger_if_idle(
                         state_file,
-                        bot_state,
                         customer_name,
                         trigger_updates,
                         current_triggers,
                         max_triggers,
-                        role,
                     )
 
-                    _send_alert_if_due(
-                        alert_key,
-                        state,
-                        format_slack_message(
-                            customer,
-                            None,
-                            consular_slot,
-                            None,
-                            matched_consular_city,
-                        ),
-                        (
-                            f"✅ [FALLBACK] Alert sent for "
-                            f"{customer_name} | Consular "
-                            f"{matched_consular_city} "
-                            f"{consular_slot['display_date']} "
-                            f"({consular_slot['count']} slots)"
-                        ),
-                    )
+                    if queued:
+                        alert_jobs.append(
+                            (
+                                alert_key,
+                                format_slack_message(
+                                    customer,
+                                    None,
+                                    consular_slot,
+                                    None,
+                                    matched_consular_city,
+                                ),
+                                (
+                                    f"✅ [FALLBACK] Alert sent for "
+                                    f"{customer_name} | Consular "
+                                    f"{matched_consular_city} "
+                                    f"{consular_slot['display_date']} "
+                                    f"({consular_slot['count']} slots)"
+                                ),
+                            )
+                        )
                     continue
 
                 if action_mode == "RESCHEDULE_CONSULAR":
@@ -485,34 +461,34 @@ def main():
                         ),
                     }
 
-                    current_triggers = _write_trigger_if_idle(
+                    current_triggers, queued = _write_trigger_if_idle(
                         state_file,
-                        bot_state,
                         customer_name,
                         trigger_updates,
                         current_triggers,
                         max_triggers,
-                        role,
                     )
 
-                    _send_alert_if_due(
-                        alert_key,
-                        state,
-                        format_slack_message(
-                            customer,
-                            None,
-                            consular_slot,
-                            None,
-                            matched_consular_city,
-                        ),
-                        (
-                            f"✅ [RESCHEDULE] Alert sent for "
-                            f"{customer_name} | Consular "
-                            f"{matched_consular_city} "
-                            f"{consular_slot['display_date']} "
-                            f"({consular_slot['count']} slots)"
-                        ),
-                    )
+                    if queued:
+                        alert_jobs.append(
+                            (
+                                alert_key,
+                                format_slack_message(
+                                    customer,
+                                    None,
+                                    consular_slot,
+                                    None,
+                                    matched_consular_city,
+                                ),
+                                (
+                                    f"✅ [RESCHEDULE] Alert sent for "
+                                    f"{customer_name} | Consular "
+                                    f"{matched_consular_city} "
+                                    f"{consular_slot['display_date']} "
+                                    f"({consular_slot['count']} slots)"
+                                ),
+                            )
+                        )
                     continue
 
                 # ── Full Booking (SNIPER / RESCHEDULE_FULL) path ─────────────
@@ -622,39 +598,49 @@ def main():
                     ),
                 }
 
-                current_triggers = _write_trigger_if_idle(
+                current_triggers, queued = _write_trigger_if_idle(
                     state_file,
-                    bot_state,
                     customer_name,
                     trigger_updates,
                     current_triggers,
                     max_triggers,
-                    role,
                 )
 
+                if queued:
+                    alert_jobs.append(
+                        (
+                            alert_key,
+                            format_slack_message(
+                                customer,
+                                ofc,
+                                consular,
+                                matched_ofc_city,
+                                (
+                                    matched_consular_city
+                                    if consular
+                                    else None
+                                ),
+                            ),
+                            (
+                                f"✅ Alert sent for {customer_name} | "
+                                f"OFC {matched_ofc_city} "
+                                f"{ofc['display_date']} "
+                                f"({ofc['count']} slots) | "
+                                f"Consular {consular_desc}"
+                            ),
+                        )
+                    )
+
+            # Every matching account is queued before Slack is called.
+            for alert_key, message, success_message in alert_jobs:
                 _send_alert_if_due(
                     alert_key,
                     state,
-                    format_slack_message(
-                        customer,
-                        ofc,
-                        consular,
-                        matched_ofc_city,
-                        (
-                            matched_consular_city
-                            if consular
-                            else None
-                        ),
-                    ),
-                    (
-                        f"✅ Alert sent for {customer_name} | "
-                        f"OFC {matched_ofc_city} "
-                        f"{ofc['display_date']} "
-                        f"({ofc['count']} slots) | "
-                        f"Consular {consular_desc}"
-                    ),
+                    message,
+                    success_message,
                 )
 
+            # Persist Slack cooldown timestamps after sending alerts.
             save_state(state)
 
         except Exception as e:

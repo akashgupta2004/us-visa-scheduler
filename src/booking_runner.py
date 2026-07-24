@@ -45,7 +45,12 @@ from src.auth.browser import connect_to_chrome
 from src.booking.cdp_client import ensure_on_portal
 from src.booking.executor import trigger_extension_booking, trigger_extension_reschedule, trigger_extension_sniper_consular_only
 from src.common.utils import safe_id
-from src.common.state import read_state as _read_state, write_state as _write_state, update_state as _update_state
+from src.common.state import (
+    read_state as _read_state,
+    write_state as _write_state,
+    update_state as _update_state,
+    try_queue_local_trigger,
+)
 from src.common.config import ACCOUNTS_FILE
 from slack import send_slack
 from src.common.db_logger import MongoDBHandler, MongoDBLogger
@@ -57,7 +62,7 @@ from src.polling_runner import fetch_dates_via_browser
 
 load_dotenv()
 
-POLL_INTERVAL = 0.5   # seconds between state file checks
+POLL_INTERVAL = 0.01   # seconds between state file checks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,6 +74,76 @@ logging.basicConfig(
 )
 log = logging.getLogger("booking_runner")
 db_logger = MongoDBLogger()
+
+
+def _get_booking_rest_seconds() -> float:
+    """
+    Read the common booking-rest duration.
+
+    Supports the old rest_hours value for backward compatibility.
+    """
+    polling_state_file = (
+        Path(__file__).parent / "polling_state.json"
+    )
+    default_minutes = 60.0
+
+    if not polling_state_file.exists():
+        return default_minutes * 60
+
+    try:
+        data = json.loads(
+            polling_state_file.read_text(encoding="utf-8")
+        )
+
+        if "rest_minutes" in data:
+            minutes = float(
+                data.get("rest_minutes", default_minutes)
+            )
+        elif "rest_hours" in data:
+            minutes = float(
+                data.get("rest_hours", 1.0)
+            ) * 60
+        else:
+            minutes = default_minutes
+
+        return max(minutes, 0) * 60
+
+    except Exception:
+        return default_minutes * 60
+
+
+def _enter_booking_rest(
+    state_file: Path,
+    customer: str,
+    reason: str,
+) -> float:
+    """
+    Block CVS and self-booking while background polling continues.
+    """
+    rest_seconds = _get_booking_rest_seconds()
+    now = time.time()
+    rest_until = now + rest_seconds
+    rest_minutes = rest_seconds / 60
+
+    _update_state(
+        state_file,
+        {
+            "rest_until": rest_until,
+            "pending": False,
+            "extension_running": False,
+            "last_booking_failure_at": now,
+            "last_booking_failure_reason": str(reason)[:500],
+        },
+    )
+
+    log.warning(
+        f"💤 Booking failed for '{customer}'. "
+        f"Booking rest active for {rest_minutes:g} minute(s), "
+        f"until {datetime.fromtimestamp(rest_until).strftime('%H:%M:%S')}. "
+        f"Background polling remains active."
+    )
+
+    return rest_until
 
 # ─── State file helpers (wrappers around shared state module) ─────────────────
 
@@ -522,7 +597,8 @@ async def _try_background_poll(page, customer: str, username: str, last_backgrou
         if got_slot:
             last_background_poll = time.time()
             try:
-                res = await fetch_dates_via_browser(page)
+                my_config = _load_account_config(username)
+                res = await fetch_dates_via_browser(page, my_config)
                 if res and res.get("success"):
                     results = res["results"]
                     dates_found = False
@@ -558,58 +634,129 @@ async def _try_background_poll(page, customer: str, username: str, last_backgrou
                         
                         # --- SELF-BOOKING LOGIC ---
                         uid = safe_id(username)
-                        state_file = Path(__file__).parent / f"state_{uid}.json"
-                        rest_until = 0
+                        state_file = (
+                            Path(__file__).parent / f"state_{uid}.json"
+                        )
                         instant_booking = True
-                        if state_file.exists():
-                            try:
-                                with open(state_file, "r") as f:
-                                    rest_until = json.load(f).get("rest_until", 0)
-                            except Exception:
-                                pass
-                                
-                        polling_state_file = Path(__file__).parent / "polling_state.json"
+
+                        polling_state_file = (
+                            Path(__file__).parent / "polling_state.json"
+                        )
                         if polling_state_file.exists():
                             try:
                                 with open(polling_state_file, "r") as f:
-                                    instant_booking = json.load(f).get("instant_booking", True)
+                                    instant_booking = json.load(f).get(
+                                        "instant_booking",
+                                        True,
+                                    )
                             except Exception:
                                 pass
-                        
-                        # Only attempt self-booking if instant booking is enabled AND we are NOT in a rest period
-                        if instant_booking and not (rest_until and time.time() < rest_until):
-                            if ACCOUNTS_FILE.exists():
-                                all_accounts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
-                                my_config = next((acc for acc in all_accounts if acc.get("customer_name") == customer or acc.get("username") == username), None)
-                                
-                                if my_config:
-                                    matched, matched_city, earliest_date = _match_polled_ofc_dates(results, my_config)
-                                    if matched:
-                                        print(f"[POLLING-RESULT] ⚡ Self-booking triggered for '{customer}'!", flush=True)
-                                        action_mode = str(my_config.get("action_mode", "SNIPER")).strip().upper()
-                                        action_type = "RESCHEDULE_FULL" if action_mode == "RESCHEDULE_FULL" else "SNIPER"
-                                        trigger_key = f"background|{safe_id(username)}|{matched_city.upper()}|{earliest_date}|{action_type}"
-                                        
-                                        trigger_updates = {
-                                            "extension_running": False,
-                                            "pending": True,
-                                            "trigger_timestamp": time.time(),
-                                            "trigger_key": trigger_key,
-                                            "action_type": action_type,
-                                            "ofcCities": my_config.get("ofcCities", []),
-                                            "ofcPriorityCity": matched_city,
-                                            "ofcStartDate": my_config.get("ofcStartDate", ""),
-                                            "ofcEndDate": my_config.get("ofcEndDate", ""),
-                                            "consularCities": my_config.get("consularCities", []),
-                                            "consularPriorityCity": my_config.get("consularPriorityCity", ""),
-                                            "consularStartDate": my_config.get("consularStartDate", ""),
-                                            "consularEndDate": my_config.get("consularEndDate", ""),
-                                            "customer_name": customer,
-                                            "prevent_immediate": my_config.get("prevent_immediate", False),
-                                            "multiPerson": my_config.get("multiPerson", False)
-                                        }
-                                        _update_state(state_file, trigger_updates)
-                                        return last_background_poll, last_poll_debug, True
+
+                        # The atomic queue helper checks rest/busy/pending state.
+                        if instant_booking and ACCOUNTS_FILE.exists():
+                            all_accounts = json.loads(
+                                ACCOUNTS_FILE.read_text(encoding="utf-8")
+                            )
+                            my_config = next(
+                                (
+                                    acc
+                                    for acc in all_accounts
+                                    if acc.get("customer_name") == customer
+                                    or acc.get("username") == username
+                                ),
+                                None,
+                            )
+
+                            if my_config:
+                                matched, matched_city, earliest_date = (
+                                    _match_polled_ofc_dates(
+                                        results,
+                                        my_config,
+                                    )
+                                )
+
+                                if matched:
+                                    action_mode = str(
+                                        my_config.get(
+                                            "action_mode",
+                                            "SNIPER",
+                                        )
+                                    ).strip().upper()
+
+                                    action_type = (
+                                        "RESCHEDULE_FULL"
+                                        if action_mode == "RESCHEDULE_FULL"
+                                        else "SNIPER"
+                                    )
+
+                                    trigger_key = (
+                                        f"background|{safe_id(username)}|"
+                                        f"{matched_city.upper()}|"
+                                        f"{earliest_date}|{action_type}"
+                                    )
+
+                                    trigger_updates = {
+                                        "pending": True,
+                                        "trigger_timestamp": time.time(),
+                                        "trigger_key": trigger_key,
+                                        "action_type": action_type,
+                                        "ofcCities": my_config.get(
+                                            "ofcCities", []
+                                        ),
+                                        "ofcPriorityCity": matched_city,
+                                        "ofcStartDate": my_config.get(
+                                            "ofcStartDate", ""
+                                        ),
+                                        "ofcEndDate": my_config.get(
+                                            "ofcEndDate", ""
+                                        ),
+                                        "consularCities": my_config.get(
+                                            "consularCities", []
+                                        ),
+                                        "consularPriorityCity": my_config.get(
+                                            "consularPriorityCity", ""
+                                        ),
+                                        "consularStartDate": my_config.get(
+                                            "consularStartDate", ""
+                                        ),
+                                        "consularEndDate": my_config.get(
+                                            "consularEndDate", ""
+                                        ),
+                                        "customer_name": customer,
+                                        "prevent_immediate": my_config.get(
+                                            "prevent_immediate", False
+                                        ),
+                                        "multiPerson": my_config.get(
+                                            "multiPerson", False
+                                        ),
+                                    }
+
+                                    queued, queue_reason = (
+                                        try_queue_local_trigger(
+                                            state_file,
+                                            trigger_updates,
+                                        )
+                                    )
+
+                                    if queued:
+                                        print(
+                                            f"[POLLING-RESULT] ⚡ "
+                                            f"Self-booking triggered for "
+                                            f"'{customer}'!",
+                                            flush=True,
+                                        )
+                                        return (
+                                            last_background_poll,
+                                            last_poll_debug,
+                                            True,
+                                        )
+
+                                    print(
+                                        f"[POLLING-RESULT] ⏭️ "
+                                        f"Self-booking not queued for "
+                                        f"'{customer}': {queue_reason}",
+                                        flush=True,
+                                    )
                                     
                 else:
                     print(f"[POLLING-RESULT] {res}", flush=True)
@@ -721,29 +868,64 @@ async def run(cdp_port: int, customer: str, username: str):
 
                 # ── Check for pending trigger ───────────────────────────────
                 if state.get("pending") and not is_resting:
-                    print("\n" + "=" * 60) # Visual break
-                    # Mark extension as running before we start
-                    _update_state(state_file, {"extension_running": True, "pending": False})
-                    log.info(f"📥 Pending trigger detected for '{customer}'.")
+                    print("\n" + "=" * 60)
 
-                    try:
-                        file_age = time.time() - os.path.getmtime(state_file)
-                        if file_age > 30.0:
-                            log.warning(f"⏭️ Skipping trigger: it is {file_age:.1f} seconds old (> 30s limit).")
-                            continue
-                    except Exception as e:
-                        log.warning(f"Could not check trigger file age: {e}")
-
+                    # Check the original trigger timestamp BEFORE modifying the state file.
                     trigger_ts = state.get("trigger_timestamp")
+                    trigger_delay = None
+
                     if trigger_ts:
-                        delay = time.time() - trigger_ts
-                        if delay > 120.0:
-                            log.warning(f"⚠️ Trigger execution delayed by {delay:.1f} seconds! Continuing anyway (clock skew possible).")
-                        elif delay > 10.0:
-                            reason = "Bot was busy or in Cloudflare queue."
-                            log.warning(f"⚠️ Trigger execution delayed by {delay:.1f} seconds! Reason: {reason}")
+                        try:
+                            trigger_delay = time.time() - float(trigger_ts)
+                        except (TypeError, ValueError):
+                            log.warning(
+                                f"Could not read trigger timestamp: {trigger_ts!r}"
+                            )
+
+                    # Never execute a trigger that is more than 30 seconds old.
+                    if trigger_delay is not None and trigger_delay > 30.0:
+                        log.warning(
+                            f"⏭️ Skipping stale trigger for '{customer}': "
+                            f"it is {trigger_delay:.1f} seconds old."
+                        )
+
+                        _update_state(
+                            state_file,
+                            {
+                                "pending": False,
+                                "extension_running": False,
+                            },
+                        )
+
+                        last_keep_alive = time.time()
+                        await asyncio.sleep(0.1)
+                        continue
+
+                    # The trigger is fresh. Mark the extension as running.
+                    _update_state(
+                        state_file,
+                        {
+                            "extension_running": True,
+                            "pending": False,
+                        },
+                    )
+
+                    log.info(
+                        f"📥 Pending trigger detected for '{customer}'."
+                    )
+
+                    if trigger_delay is not None:
+                        if trigger_delay > 10.0:
+                            log.warning(
+                                f"⚠️ Trigger execution delayed by "
+                                f"{trigger_delay:.1f} seconds! "
+                                f"Reason: Bot was busy or in Cloudflare queue."
+                            )
                         else:
-                            log.info(f"⚡ Trigger picked up swiftly in {delay:.3f} seconds.")
+                            log.info(
+                                f"⚡ Trigger picked up swiftly in "
+                                f"{trigger_delay:.3f} seconds."
+                            )
 
                     action_type = state.get("action_type")
 
@@ -799,55 +981,103 @@ async def run(cdp_port: int, customer: str, username: str):
                     except Exception as e:
                         log.error(f"Action error: {e}", exc_info=True)
                         success = False
+
                         if "429" in str(e):
-                            log.error("429 Too Many Requests detected! Exiting bot2 with code 42 to signal a restart.")
+                            log.error(
+                                "429 Too Many Requests detected! "
+                                "Exiting bot2 with code 42 to signal a restart."
+                            )
+
                             if state.get("waitingForConsular"):
-                                log.warning("WAITING MODE is over (429 hit). Resetting flags.")
-                                _update_state(state_file, {
-                                    "waitingForConsular": False,
-                                    "bookedOfcDate": None,
-                                    "waitStartTime": None
-                                })
+                                log.warning(
+                                    "WAITING MODE is over (429 hit). "
+                                    "Resetting flags."
+                                )
+                                _update_state(
+                                    state_file,
+                                    {
+                                        "waitingForConsular": False,
+                                        "bookedOfcDate": None,
+                                        "waitStartTime": None,
+                                    },
+                                )
+
+                            _enter_booking_rest(
+                                state_file,
+                                customer,
+                                "429 Too Many Requests during booking attempt",
+                            )
                             sys.exit(42)
+
                         if "Session expired" in str(e):
-                            is_waiting = state.get("waitingForConsular", False)
+                            is_waiting = state.get(
+                                "waitingForConsular",
+                                False,
+                            )
+
                             if is_waiting:
-                                log.error("🚨 Session expired during Consular WAIT MODE. The server will drop the OFC booking. Abandoning wait mode and restarting full flow...")
-                                _update_state(state_file, {
-                                    "waitingForConsular": False,
-                                    "bookedOfcDate": None,
-                                    "waitStartTime": None
-                                })
+                                log.error(
+                                    "🚨 Session expired during Consular "
+                                    "WAIT MODE. Clearing the current wait "
+                                    "state before recovery."
+                                )
+                                _update_state(
+                                    state_file,
+                                    {
+                                        "waitingForConsular": False,
+                                        "bookedOfcDate": None,
+                                        "waitStartTime": None,
+                                    },
+                                )
                                 context["waitingForConsular"] = False
                                 context["bookedOfcDate"] = None
                             else:
-                                log.error("Session expired during action. Triggering recovery...")
-                            
-                            # Trigger recovery for both cases
-                            recovered = await recover_session(page, customer, username)
+                                log.error(
+                                    "Session expired during booking action. "
+                                    "Starting recovery."
+                                )
+
+                            recovered = await recover_session(
+                                page,
+                                customer,
+                                username,
+                            )
+
+                            _enter_booking_rest(
+                                state_file,
+                                customer,
+                                "Session expired during booking attempt",
+                            )
+
                             if not recovered:
-                                log.error("Recovery failed after action. Exiting to trigger orchestrator restart...")
+                                log.error(
+                                    "Recovery failed after booking action. "
+                                    "Exiting to trigger orchestrator restart."
+                                )
                                 sys.exit(1)
-                            else:
-                                if is_waiting:
-                                    log.info("Recovery successful! However, OFC slot is lost due to session expiry. Abandoning trigger.")
-                                    _update_state(state_file, {"extension_running": False})
-                                else:
-                                    log.info("Recovery successful! Re-queueing the trigger to retry the booking.")
-                                    _update_state(state_file, {"pending": True, "extension_running": False})
-                                continue
+
+                            log.info(
+                                "Session recovered. Background polling will "
+                                "continue, but CVS and self-booking remain "
+                                "blocked until booking rest expires."
+                            )
+                            continue
 
                     if success:
                         log.info("=" * 60)
                         log.info(f"✅ ACTION COMPLETED SUCCESSFULLY for '{customer}'! [{action_type}]")
                         log.info("=" * 60)
                         
-                        _update_state(state_file, {
-                            "waitingForConsular": False,
-                            "bookedOfcDate": None,
-                            "waitStartTime": None,
-                            "completed": True
-                        })
+                        _update_state(
+                            state_file,
+                            {
+                                "waitingForConsular": False,
+                                "bookedOfcDate": None,
+                                "waitStartTime": None,
+                                "completed": True,
+                                "rest_until": 0,
+                            },
+                        )
                         send_slack(f"🎉 *BOOKING SUCCESSFUL* 🎉\n*Customer / ID:* `{customer}`\n*Type:* `{action_type}`\n✅ The appointment has been successfully scheduled!")
                     else:
                         if context.get("waitingForConsular"):
@@ -874,36 +1104,11 @@ async def run(cdp_port: int, customer: str, username: str):
                                     "waitStartTime": None
                                 })
                                 
-                            # Enter rest period (only for POLLING accounts)
-                            is_polling_account = True
-                            if ACCOUNTS_FILE.exists():
-                                try:
-                                    _accts = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
-                                    for _ac in _accts:
-                                        ac_uname = _ac.get("username", "")
-                                        # Use username to match; if not present, fallback to customer_name matching
-                                        if (ac_uname and ac_uname == username) or (not ac_uname and _ac.get("customer_name") == customer):
-                                            if _ac.get("role") == "RESERVED_BOOKING":
-                                                is_polling_account = False
-                                            break
-                                except Exception:
-                                    pass
-
-                            if is_polling_account:
-                                rest_hours = 1
-                                polling_state_file = Path(__file__).parent / "polling_state.json"
-                                if polling_state_file.exists():
-                                    try:
-                                        with open(polling_state_file, "r") as f:
-                                            rest_hours = float(json.load(f).get("rest_hours", 1))
-                                    except Exception:
-                                        pass
-                                        
-                                rest_until = time.time() + (rest_hours * 3600)
-                                _update_state(state_file, {"rest_until": rest_until})
-                                log.warning(f"💤 Polling Account '{customer}' entering rest period for {rest_hours} hour(s) until {datetime.fromtimestamp(rest_until).strftime('%H:%M:%S')}")
-                            else:
-                                log.info(f"ℹ️ VIP Booking Account '{customer}' failed booking, but skipping rest period since it is not a polling account.")
+                            _enter_booking_rest(
+                                state_file,
+                                customer,
+                                f"{action_type or 'UNKNOWN'} booking attempt failed",
+                            )
 
                     # Mark extension as done
                     _update_state(state_file, {"extension_running": False})
@@ -913,7 +1118,7 @@ async def run(cdp_port: int, customer: str, username: str):
                     continue
 
                 # ── If NO trigger, do maintenance ──────────────────────────────
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(POLL_INTERVAL)
                 
                 # ── Delayed Polling for Consular ──────────────────────────────
                 state = _read_state(state_file)
@@ -1036,8 +1241,25 @@ async def run(cdp_port: int, customer: str, username: str):
                 log.info("Stopped by user.")
                 break
             except Exception as e:
-                log.error(f"Unexpected error in watch loop: {e}", exc_info=True)
-                _update_state(state_file, {"extension_running": False})
+                log.error(
+                    f"Unexpected error in watch loop: {e}",
+                    exc_info=True,
+                )
+
+                latest_state = _read_state(state_file)
+
+                if latest_state.get("extension_running"):
+                    _enter_booking_rest(
+                        state_file,
+                        customer,
+                        f"Unexpected error during booking: {e}",
+                    )
+                else:
+                    _update_state(
+                        state_file,
+                        {"extension_running": False},
+                    )
+
                 await asyncio.sleep(5)
 
     # Cleanup on exit

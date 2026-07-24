@@ -47,12 +47,24 @@ def load_running_accounts():
         log.error(f"Failed to load accounts: {e}")
         return []
 
-async def fetch_dates_via_browser(page):
+async def fetch_dates_via_browser(page, match_config=None):
     """
     Executes JS in the context of the browser to fetch OFC dates directly from the official API.
+
+    The existing five-city order is unchanged. When the first OFC date
+    qualifying for this account is found, the function returns immediately
+    without polling the remaining cities.
     """
+    match_config = match_config or {}
+    criteria = {
+        "ofcCities": match_config.get("ofcCities", []),
+        "ofcStartDate": match_config.get("ofcStartDate", ""),
+        "ofcEndDate": match_config.get("ofcEndDate", ""),
+        "preventImmediate": match_config.get("prevent_immediate", False),
+    }
+
     js_code = """
-    async () => {
+    async (criteria) => {
         let primaryId = "";
         let appd = "";
         for (const script of Array.from(document.querySelectorAll("script:not([src])"))) {
@@ -98,7 +110,32 @@ async def fetch_dates_via_browser(page):
 
         const isRescheduleUrl = window.location.href.toLowerCase().includes("reschedule");
         const results = {};
-        
+
+        const normalizeCity = (value) => {
+            const city = String(value || "").trim().toUpperCase();
+            return city === "DELHI" ? "NEW DELHI" : city;
+        };
+
+        const targetCities = new Set(
+            (criteria.ofcCities || []).map(normalizeCity)
+        );
+
+        let effectiveStartDate = criteria.ofcStartDate || "";
+        const effectiveEndDate = criteria.ofcEndDate || "";
+
+        if (criteria.preventImmediate) {
+            const dynamicStart = new Date();
+            dynamicStart.setDate(dynamicStart.getDate() + 3);
+            const dynamicStartDate =
+                `${dynamicStart.getFullYear()}-` +
+                `${String(dynamicStart.getMonth() + 1).padStart(2, "0")}-` +
+                `${String(dynamicStart.getDate()).padStart(2, "0")}`;
+
+            if (!effectiveStartDate || effectiveStartDate < dynamicStartDate) {
+                effectiveStartDate = dynamicStartDate;
+            }
+        }
+
         for (const [city, postId] of Object.entries(OFC_LOCATION_MAP)) {
             try {
                 const dateUrl = `/en-US/custom-actions/?route=/api/v1/schedule-group/get-family-ofc-schedule-days&appd=${appd}&cacheString=${Date.now()}`;
@@ -118,6 +155,46 @@ async def fetch_dates_via_browser(page):
                     const data = JSON.parse(text);
                     if (data && data.ScheduleDays) {
                         results[city] = data.ScheduleDays;
+
+                        const cityIsSelected = targetCities.has(
+                            normalizeCity(city)
+                        );
+
+                        const qualifyingDate = cityIsSelected
+                            ? data.ScheduleDays.find((item) => {
+                                  const dateValue = String(
+                                      item.Date || item
+                                  ).slice(0, 10);
+
+                                  return (
+                                      effectiveStartDate &&
+                                      effectiveEndDate &&
+                                      dateValue >= effectiveStartDate &&
+                                      dateValue <= effectiveEndDate
+                                  );
+                              })
+                            : null;
+
+                        if (qualifyingDate) {
+                            const matchedDate = String(
+                                qualifyingDate.Date || qualifyingDate
+                            ).slice(0, 10);
+
+                            console.log(
+                                `[Polling] Qualifying OFC date found: ` +
+                                `${city} ${matchedDate}. ` +
+                                `Stopping remaining city polling.`
+                            );
+
+                            return {
+                                success: true,
+                                results: results,
+                                earlyMatch: {
+                                    city: city,
+                                    date: matchedDate
+                                }
+                            };
+                        }
                     } else {
                         results[city] = [];
                     }
@@ -134,7 +211,7 @@ async def fetch_dates_via_browser(page):
         return { success: true, results: results };
     }
     """
-    return await page.evaluate(js_code)
+    return await page.evaluate(js_code, criteria)
 
 async def poll_account(account, p):
     username = account.get("username")
@@ -212,7 +289,7 @@ async def poll_account(account, p):
         await asyncio.sleep(5)
 
         log.info("Executing API fetch directly via browser context...")
-        data = await fetch_dates_via_browser(page)
+        data = await fetch_dates_via_browser(page, account)
         
         if data.get("error"):
             log.error(f"Failed to fetch data: {data['error']}")

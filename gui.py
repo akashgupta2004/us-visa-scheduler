@@ -1042,13 +1042,34 @@ class App(tk.Tk):
         self.var_instant_booking = tk.BooleanVar(value=True)
         ttk.Checkbutton(settings_frame, variable=self.var_instant_booking, style="Surface.TCheckbutton").pack(side=tk.LEFT, padx=5)
 
-        ttk.Label(settings_frame, text="💤 Rest (hr):", style="Surface.TLabel",
-                  font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=(20, 5), pady=10)
-        self.var_rest_hours = tk.StringVar(value="1.0")
-        tk.Entry(settings_frame, textvariable=self.var_rest_hours, width=5,
-                 font=("Consolas", 11), bg=ENTRY_BG, fg=ENTRY_FG,
-                 insertbackground=ENTRY_FG, relief="flat",
-                 highlightbackground=BORDER, highlightthickness=1).pack(side=tk.LEFT, padx=5)
+        ttk.Label(
+            settings_frame,
+            text="💤 Booking Rest (min):",
+            style="Surface.TLabel",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(
+            side=tk.LEFT,
+            padx=(20, 5),
+            pady=10,
+        )
+
+        self.var_rest_minutes = tk.StringVar(value="60")
+
+        tk.Entry(
+            settings_frame,
+            textvariable=self.var_rest_minutes,
+            width=6,
+            font=("Consolas", 11),
+            bg=ENTRY_BG,
+            fg=ENTRY_FG,
+            insertbackground=ENTRY_FG,
+            relief="flat",
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        ).pack(
+            side=tk.LEFT,
+            padx=5,
+        )
 
         log_frame = ttk.Frame(self.tab_polling, style="Surface.TFrame")
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 10))
@@ -1085,9 +1106,9 @@ class App(tk.Tk):
                     "cooldown": int(self.var_cooldown.get()),
                     "gap": int(self.var_gap.get()),
                     "instant_booking": self.var_instant_booking.get(),
-                    "rest_hours": float(self.var_rest_hours.get())
+                    "rest_minutes": float(self.var_rest_minutes.get())
                 }, f)
-            self._log_poll(f"[GUI] ✅ Polling activated. Cooldown={self.var_cooldown.get()}s, Gap={self.var_gap.get()}s, Instant Booking={'ON' if self.var_instant_booking.get() else 'OFF'}, Rest={self.var_rest_hours.get()}h. Waiting for first poll cycle...")
+            self._log_poll(f"[GUI] ✅ Polling activated. Cooldown={self.var_cooldown.get()}s, Gap={self.var_gap.get()}s, Instant Booking={'ON' if self.var_instant_booking.get() else 'OFF'}, Booking Rest={self.var_rest_minutes.get()} min. Waiting for first poll cycle...")
         except Exception as e:
             self._log_poll(f"[GUI] ❌ Error activating polling: {e}")
 
@@ -1097,9 +1118,29 @@ class App(tk.Tk):
         
         state_path = BASE_DIR / "src" / "polling_state.json"
         try:
-            with open(state_path, "w", encoding="utf-8") as f:
-                json.dump({"is_active": False}, f)
-            self._log_poll("[GUI] 🛑 Polling deactivated. In-session polling stopped.")
+            polling_state = {}
+            if state_path.exists():
+                try:
+                    polling_state = json.loads(
+                        state_path.read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    polling_state = {}
+
+            polling_state["is_active"] = False
+            polling_state.setdefault(
+                "rest_minutes",
+                float(self.var_rest_minutes.get()),
+            )
+
+            state_path.write_text(
+                json.dumps(polling_state),
+                encoding="utf-8",
+            )
+            self._log_poll(
+                "[GUI] 🛑 Polling deactivated. "
+                "In-session polling stopped."
+            )
         except Exception as e:
             self._log_poll(f"[GUI] ❌ Error stopping polling: {e}")
 

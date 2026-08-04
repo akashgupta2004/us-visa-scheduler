@@ -7,8 +7,7 @@ import subprocess
 from pathlib import Path
 from playwright.async_api import Page, BrowserContext
 
-CHROME_EXE = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-
+from src.common.platform_utils import find_playwright_chromium
 def ensure_chrome_debug_running(cdp_port: int, profile_dir: str, log: logging.Logger) -> None:
     """
     Start Chrome with remote debugging on the given port if not already running.
@@ -63,28 +62,20 @@ def ensure_chrome_debug_running(cdp_port: int, profile_dir: str, log: logging.Lo
     except Exception as e:
         log.warning(f"Could not disable password manager in preferences: {e}")
 
-    chrome_exe = CHROME_EXE
-    # First, try to find Playwright's bundled Chromium because standard Chrome
-    # no longer supports the --load-extension command line flag.
-    import glob
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
-    if local_app_data:
-        pattern = os.path.join(local_app_data, "ms-playwright", "chromium-*", "chrome-win*", "chrome.exe")
-        matches = glob.glob(pattern)
-        if matches:
-            matches.sort(reverse=True)
-            chrome_exe = matches[0]
+    # Use Playwright's bundled Chromium because regular Google Chrome may
+    # reject --load-extension command-line loading.
+    chrome_exe = find_playwright_chromium()
 
-    if not os.path.isfile(chrome_exe) or "ms-playwright" not in chrome_exe:
+    if not chrome_exe:
         log.error(
-            "Playwright Chromium not found. The standard Google Chrome browser no longer supports "
-            "side-loading extensions via command line.\n"
-            "Please install Playwright's bundled Chromium by running:\n"
-            "  playwright install chromium\n"
-            "Then run this bot again."
+            "Playwright Chromium was not found.\n"
+            "Install it inside the active virtual environment by running:\n"
+            "  python -m playwright install chromium\n"
+            "Then run the bot again."
         )
         sys.exit(1)
 
+    log.info(f"Using Playwright Chromium executable: {chrome_exe}")
     # Load the production build of the extension from the local extension-build folder.
     extension_path = str((Path(__file__).parent.parent.parent / "extension-build" / "chrome-mv3-prod").resolve())
     log.info(f"Using extension from: {extension_path}")

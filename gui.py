@@ -13,6 +13,7 @@ from tkcalendar import DateEntry
 
 from src.common.utils import safe_id
 from src.common.state import update_state
+from src.common.platform_utils import terminate_process_tree
 
 # ─── Script Paths ────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -837,17 +838,22 @@ class App(tk.Tk):
 
     def _stop_orchestrator(self):
         if self.orchestrator_proc:
-            self._log("[GUI] Sending termination signal to orchestrator and all child processes...")
+            self._log(
+                "[GUI] Sending termination signal to "
+                "orchestrator and all child processes..."
+            )
             self.btn_stop.state(["disabled"])
+
             try:
-                import subprocess
-                # /T kills the process tree (including all spawned bots and Chrome windows)
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(self.orchestrator_proc.pid)],
-                    capture_output=True
+                terminate_process_tree(
+                    self.orchestrator_proc.pid
                 )
-            except Exception as e:
-                self._log(f"[GUI] Error during process tree termination: {e}")
+            except Exception as exc:
+                self._log(
+                    "[GUI] Error during process tree "
+                    f"termination: {exc}"
+                )
+
         self._update_active_bots_list()
 
     def _on_orchestrator_exit(self):
@@ -1234,10 +1240,12 @@ class App(tk.Tk):
     def destroy(self):
         if self.orchestrator_proc:
             try:
-                import subprocess
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.orchestrator_proc.pid)], capture_output=True)
-            except:
+                terminate_process_tree(
+                    self.orchestrator_proc.pid
+                )
+            except Exception:
                 pass
+
         super().destroy()
 
 if __name__ == "__main__":

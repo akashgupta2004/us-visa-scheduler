@@ -42,6 +42,7 @@ from slack import send as slack_send
 from src.common.utils import safe_id
 from src.common.config import load_accounts as _load_accounts, ACCOUNTS_FILE
 from src.common.state import update_state as _update_bot_state, get_state_file as _get_state_file
+from src.common.platform_utils import kill_process_by_port, terminate_process_tree
 
 # ─────────────────────────────────────────────────────────────
 BOT_SCRIPT      = Path(__file__).parent / "login_runner.py"
@@ -145,28 +146,25 @@ def spawn_monitor() -> subprocess.Popen:
 
 
 def kill_chrome_by_port(cdp_port: int) -> None:
-    """Kill the Chrome process listening on the given CDP port."""
+    """Kill the managed Chrome process listening on the CDP port."""
     try:
-        result = subprocess.run(
-            ["netstat", "-ano", "-p", "TCP"],
-            capture_output=True, text=True
-        )
-        pid = None
-        for line in result.stdout.splitlines():
-            if "LISTENING" not in line:
-                continue
-            parts = line.split()
-            # parts[1] is the local address column, e.g. "127.0.0.1:9222"
-            if len(parts) >= 5 and parts[1].endswith(f":{cdp_port}"):
-                pid = parts[-1]
-                break
-        if pid and pid.isdigit():
-            subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True)
-            log(f"🖥️  Killed Chrome PID {pid} on port {cdp_port}")
+        killed_pid = kill_process_by_port(cdp_port)
+
+        if killed_pid:
+            log(
+                f"🖥️  Killed Chrome PID {killed_pid} "
+                f"on port {cdp_port}"
+            )
         else:
-            log(f"⚠️  No Chrome process found on port {cdp_port} to kill")
-    except Exception as e:
-        log(f"⚠️  Failed to kill Chrome on port {cdp_port}: {e}")
+            log(
+                f"⚠️  No Chrome process found "
+                f"on port {cdp_port} to kill"
+            )
+    except Exception as exc:
+        log(
+            f"⚠️  Failed to kill Chrome "
+            f"on port {cdp_port}: {exc}"
+        )
 
 
 # ─────────────────────────────────────────────────────────────
@@ -225,7 +223,7 @@ def main() -> None:
 
         for p in all_procs:
             try:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
+                terminate_process_tree(p.pid)
             except Exception:
                 pass
         # Give them a moment to die
@@ -504,9 +502,9 @@ def main() -> None:
                             proc  = session.get("login_proc")
                             bproc = session.get("booking_proc")
                             if bproc and bproc.poll() is None:
-                                subprocess.run(["taskkill", "/F", "/T", "/PID", str(bproc.pid)], capture_output=True)
+                                terminate_process_tree(bproc.pid)
                             if proc and proc.poll() is None:
-                                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+                                terminate_process_tree(proc.pid)
                             kill_chrome_by_port(session["cdp_port"])
                             session["login_proc"]  = None
                             session["booking_proc"] = None
@@ -562,7 +560,7 @@ def main() -> None:
                     session["login_proc"] = None
                     # Always kill booking_proc when login dies
                     if booking_proc and booking_proc.poll() is None:
-                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(booking_proc.pid)], capture_output=True)
+                        terminate_process_tree(booking_proc.pid)
                     session["booking_proc"] = None
                     try:
                         _update_bot_state(_get_state_file(session["account"]["username"]), {"extension_running": False})
@@ -585,7 +583,7 @@ def main() -> None:
                     # local `proc` captured at the top of this loop iteration.
                     current_login_proc = session.get("login_proc")
                     if current_login_proc and current_login_proc.poll() is None:
-                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(current_login_proc.pid)], capture_output=True)
+                        terminate_process_tree(current_login_proc.pid)
                     session["login_proc"] = None
                     # Hand off to background thread — main loop is never blocked
                     threading.Thread(target=handle_booking_crash, args=(session, code), daemon=True).start()

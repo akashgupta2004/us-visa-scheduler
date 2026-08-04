@@ -52,7 +52,11 @@ from src.common.state import (
     try_queue_local_trigger,
 )
 from src.common.config import ACCOUNTS_FILE
-from slack import send_slack
+from slack import (
+    send_slack,
+    send_ofc_booked_alert,
+    send_full_booking_to_ofc,
+)
 from src.common.db_logger import MongoDBHandler, MongoDBLogger
 
 # Add new imports for recovery
@@ -74,6 +78,70 @@ logging.basicConfig(
 )
 log = logging.getLogger("booking_runner")
 db_logger = MongoDBLogger()
+
+# Keep background Slack tasks alive until they finish.
+_background_tasks = set()
+
+
+def _queue_background_task(coroutine):
+    task = asyncio.create_task(coroutine)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _send_ofc_alert_in_background(
+    state_file: Path,
+    customer: str,
+    booked_ofc_date: str,
+    priority_city: str,
+    alert_key: str,
+):
+    """
+    Send Slack in a separate thread so it cannot delay Consular handling.
+    """
+    try:
+        sent = await asyncio.to_thread(
+            send_ofc_booked_alert,
+            customer,
+            booked_ofc_date,
+            priority_city,
+        )
+
+        if sent:
+            _update_state(
+                state_file,
+                {
+                    "lastOfcBookedAlertKey": alert_key,
+                    "ofcBookedAlertQueuedKey": None,
+                },
+            )
+
+            log.info(
+                f"✅ OFC-booked Slack alert sent for "
+                f"'{customer}' ({booked_ofc_date})."
+            )
+        else:
+            _update_state(
+                state_file,
+                {"ofcBookedAlertQueuedKey": None},
+            )
+
+            log.warning(
+                f"⚠️ OFC-booked Slack alert was not sent for "
+                f"'{customer}', but booking flow was unaffected."
+            )
+
+    except Exception as error:
+        _update_state(
+            state_file,
+            {"ofcBookedAlertQueuedKey": None},
+        )
+
+        log.warning(
+            f"⚠️ OFC-booked Slack alert failed for "
+            f"'{customer}', but booking flow was unaffected: "
+            f"{error}"
+        )
 
 
 def _get_booking_rest_seconds() -> float:
@@ -789,8 +857,6 @@ async def run(cdp_port: int, customer: str, username: str):
         "waitStartTime": None
     })
 
-    last_polling_time = 0
-    next_poll_delay = random.randint(180, 240)
     
     last_background_poll = 0
     was_polling_active = False
@@ -965,13 +1031,46 @@ async def run(cdp_port: int, customer: str, username: str):
                             log.info(f"🔄 Action type: {action_type}")
                             success, context = await trigger_extension_booking(page, trigger, log)
                         elif action_type == "SNIPER_CONSULAR_ONLY":
-                            log.info("🎯 Action type: SNIPER_CONSULAR_ONLY (Fallback)")
-                            bookedOfcDate = state.get("bookedOfcDate", "")
-                            success, context = await trigger_extension_sniper_consular_only(page, trigger, bookedOfcDate, log)
+                            log.info(
+                                "🎯 Action type: "
+                                "SNIPER_CONSULAR_ONLY (Fallback)"
+                            )
+
+                            bookedOfcDate = state.get(
+                                "bookedOfcDate",
+                                "",
+                            )
+
+                            success, context = (
+                                await trigger_extension_sniper_consular_only(
+                                    page,
+                                    trigger,
+                                    bookedOfcDate,
+                                    log,
+                                    state_file=state_file,
+                                )
+                            )
+
                         elif action_type == "RESCHEDULE_FULL_CONSULAR_ONLY":
-                            log.info("🔄 Action type: RESCHEDULE_FULL_CONSULAR_ONLY (Fallback)")
-                            bookedOfcDate = state.get("bookedOfcDate", "")
-                            success, context = await trigger_extension_sniper_consular_only(page, trigger, bookedOfcDate, log)
+                            log.info(
+                                "🔄 Action type: "
+                                "RESCHEDULE_FULL_CONSULAR_ONLY (Fallback)"
+                            )
+
+                            bookedOfcDate = state.get(
+                                "bookedOfcDate",
+                                "",
+                            )
+
+                            success, context = (
+                                await trigger_extension_sniper_consular_only(
+                                    page,
+                                    trigger,
+                                    bookedOfcDate,
+                                    log,
+                                    state_file=state_file,
+                                )
+                            )
                         elif action_type == "RESCHEDULE_CONSULAR":
                             log.info("🔄 Action type: RESCHEDULE_CONSULAR")
                             success = await trigger_extension_reschedule(page, trigger, log)
@@ -1078,19 +1177,107 @@ async def run(cdp_port: int, customer: str, username: str):
                                 "rest_until": 0,
                             },
                         )
-                        send_slack(f"🎉 *BOOKING SUCCESSFUL* 🎉\n*Customer / ID:* `{customer}`\n*Type:* `{action_type}`\n✅ The appointment has been successfully scheduled!")
+                        full_booking_message = (
+                            "🎉 *BOOKING SUCCESSFUL* 🎉\n"
+                            f"*Customer / ID:* `{customer}`\n"
+                            f"*Type:* `{action_type}`\n"
+                            "✅ The appointment has been successfully scheduled!"
+                        )
+
+                        # Existing main Slack channel notification.
+                        send_slack(full_booking_message)
+
+                        # Send the same full-booking notification to
+                        # the OFC booking alerts channel.
+                        send_full_booking_to_ofc(
+                            full_booking_message
+                        )
                     else:
                         if context.get("waitingForConsular"):
-                            log.warning("=" * 60)
-                            log.warning(f"⏳ PARTIAL BOOKING / STILL WAITING for '{customer}'! Transitioning to WAIT MODE...")
-                            log.warning("=" * 60)
-                            _update_state(state_file, {
+                            booked_ofc_date = str(
+                                context.get("bookedOfcDate") or ""
+                            ).strip()
+
+                            priority_city = str(
+                                trigger.get("ofcPriorityCity") or ""
+                            ).strip()
+
+                            booking_event_id = (
+                                state.get("trigger_key")
+                                or state.get("trigger_timestamp")
+                                or time.time()
+                            )
+
+                            alert_key = (
+                                f"{safe_id(username)}|"
+                                f"{booked_ofc_date}|"
+                                f"{booking_event_id}"
+                                if booked_ofc_date
+                                else ""
+                            )
+
+                            already_alerted = (
+                                alert_key
+                                and state.get(
+                                    "lastOfcBookedAlertKey"
+                                ) == alert_key
+                            )
+
+                            already_queued = (
+                                alert_key
+                                and state.get(
+                                    "ofcBookedAlertQueuedKey"
+                                ) == alert_key
+                            )
+
+                            should_send_alert = bool(
+                                alert_key
+                                and not already_alerted
+                                and not already_queued
+                            )
+
+                            wait_state_updates = {
                                 "waitingForConsular": True,
-                                "bookedOfcDate": context.get("bookedOfcDate"),
-                                "waitStartTime": state.get("waitStartTime") or time.time(), # Preserve start time if already waiting
+                                "bookedOfcDate": booked_ofc_date,
+                                "waitStartTime": (
+                                    state.get("waitStartTime")
+                                    or time.time()
+                                ),
                                 "extension_running": False,
-                                "pending": False
-                            })
+                                "pending": False,
+                            }
+
+                            if should_send_alert:
+                                wait_state_updates[
+                                    "ofcBookedAlertQueuedKey"
+                                ] = alert_key
+
+                            # Save the confirmed OFC state first.
+                            _update_state(
+                                state_file,
+                                wait_state_updates,
+                            )
+
+                            log.warning("=" * 60)
+                            log.warning(
+                                f"⏳ PARTIAL BOOKING / STILL WAITING "
+                                f"for '{customer}'! Transitioning to "
+                                f"WAIT MODE..."
+                            )
+                            log.warning("=" * 60)
+
+                            # Slack runs separately and cannot delay the bot.
+                            if should_send_alert:
+                                _queue_background_task(
+                                    _send_ofc_alert_in_background(
+                                        state_file,
+                                        customer,
+                                        booked_ofc_date,
+                                        priority_city,
+                                        alert_key,
+                                    )
+                                )
+
                             last_keep_alive = time.time()
                             await asyncio.sleep(0.5)
                             continue
@@ -1120,24 +1307,10 @@ async def run(cdp_port: int, customer: str, username: str):
                 # ── If NO trigger, do maintenance ──────────────────────────────
                 await asyncio.sleep(POLL_INTERVAL)
                 
-                # ── Delayed Polling for Consular ──────────────────────────────
+                                # ── Consular wait mode ────────────────────────────────────────
+                # Do not automatically attempt Consular after OFC booking.
+                # Keep waitingForConsular active and wait only for a CVS trigger.
                 state = _read_state(state_file)
-                if state.get("waitingForConsular") and not state.get("pending"):
-                    wait_start = state.get("waitStartTime")
-                    if wait_start is None:
-                        wait_start = time.time()
-                    elapsed = time.time() - wait_start
-                    # Poll continuously at intervals of roughly 1 minute
-                    if (time.time() - last_polling_time) > next_poll_delay:
-                        log.info(f"⏱️ Periodic Consular poll ({elapsed:.0f}s elapsed in wait mode). Triggering manual check.")
-                        _update_state(state_file, {
-                            "pending": True,
-                            "action_type": "SNIPER_CONSULAR_ONLY",
-                            "trigger_timestamp": time.time()
-                        })
-                        last_polling_time = time.time()
-                        next_poll_delay = random.randint(55, 65)  # 1 minute +/- 5 seconds
-                        continue
 
                 # ── Background API Polling ────────────────────────────────────
                 current_account_role = "POLLING_ONLY"

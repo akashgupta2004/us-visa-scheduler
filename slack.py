@@ -9,6 +9,7 @@ Usage:
 import os
 import sys
 import requests
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,21 +19,46 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 # Load webhook URL from environment variable
 SLACK_WEBHOOK = os.environ.get("SLACK_WEBHOOK_URL", "")
+SLACK_OFC_WEBHOOK = os.environ.get("SLACK_OFC_WEBHOOK_URL", "")
 
 
-def send(message: str, emoji: str = "💬") -> bool:
-    """Send a message to Slack. Returns True on success."""
-    if not SLACK_WEBHOOK:
+def _send_to_webhook(
+    webhook: str,
+    message: str,
+    emoji: str = "💬",
+) -> bool:
+    if not webhook:
         return False
-    payload = {"text": f"{emoji} {message}"}
+
+    prefix = f"{emoji} " if emoji else ""
+    payload = {"text": f"{prefix}{message}"}
+
     try:
-        r = requests.post(SLACK_WEBHOOK, json=payload, timeout=10)
+        r = requests.post(webhook, json=payload, timeout=10)
         r.raise_for_status()
         print(f"✅ Sent: {message}")
         return True
     except Exception as e:
         print(f"❌ Failed to send: {e}")
         return False
+
+
+def send(message: str, emoji: str = "💬") -> bool:
+    return _send_to_webhook(
+        SLACK_WEBHOOK,
+        message,
+        emoji,
+    )
+
+
+def send_ofc(message: str, emoji: str = "") -> bool:
+    return _send_to_webhook(
+        SLACK_OFC_WEBHOOK,
+        message,
+        emoji,
+    )
+
+
 def format_slack_message(customer, chosen_ofc, chosen_consular, matched_ofc_city, matched_consular_city):
     ofc_cities_str = ", ".join(customer.get("ofc_cities", [])) or "N/A"
     consular_cities_str = ", ".join(customer.get("consular_cities", []))
@@ -66,12 +92,47 @@ def format_slack_message(customer, chosen_ofc, chosen_consular, matched_ofc_city
 
 
 def send_slack(msg: str):
-    return send(f"🎯 *Qualified slot match found*\n{msg}", emoji="")
+    return send(
+        f"🎯 *Qualified slot match found*\n{msg}",
+        emoji="",
+    )
+
+
+def send_full_booking_to_ofc(msg: str):
+    return send_ofc(
+        f"🎯 *Qualified slot match found*\n{msg}",
+        emoji="",
+    )
 
 
 def send_slack_error(msg: str):
     return send(f"⚠️ *Slot Monitor Error*\n{msg}", emoji="")
 
+
+def send_ofc_booked_alert(
+    customer: str,
+    booked_ofc_date: str,
+    priority_city: str = "",
+) -> bool:
+    lines = [
+        "✅ *OFC BOOKED — CONSULAR PENDING*",
+        "",
+        f"*Customer / ID:* `{customer}`",
+        f"*OFC Date:* `{booked_ofc_date}`",
+    ]
+
+    if priority_city:
+        lines.append(
+            f"*Triggered OFC Priority:* `{priority_city}`"
+        )
+
+    lines += [
+        f"*Detected At:* `{datetime.now().strftime('%d %b %Y, %H:%M:%S')}`",
+        "",
+        "Bot is continuing in Consular-only wait mode.",
+    ]
+
+    return send_ofc("\n".join(lines), emoji="")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

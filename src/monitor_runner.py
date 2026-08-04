@@ -41,8 +41,8 @@ TRIGGER_COOLDOWN_SECONDS = int(
 )
 ERROR_BACKOFF_SECONDS = 40
 
-POLL_MIN_SECONDS = 20
-POLL_MAX_SECONDS = 25
+POLL_MIN_SECONDS = 15
+POLL_MAX_SECONDS = 20
 RESERVED_TRIGGER_STAGGER_SECONDS = float(
     os.getenv("RESERVED_TRIGGER_STAGGER_SECONDS", "1.0")
 )
@@ -150,6 +150,22 @@ def _write_trigger_if_idle(
             )
 
         return current_triggers, False
+
+    if reason == "priority_updated":
+        priority_city = str(
+            trigger_updates.get("targetConsularCity")
+            or trigger_updates.get("consularPriorityCity")
+            or ""
+        ).strip()
+
+        print(
+            f"⚡ New CVS Consular alert prioritised for "
+            f"active scan: {customer_name} → {priority_city}"
+        )
+
+        # No second execution was queued, so do not increase
+        # the number of active CVS triggers.
+        return current_triggers, True
 
     print(f"✅ CVS trigger queued for '{customer_name}'.")
     return current_triggers + 1, True
@@ -337,12 +353,27 @@ def main():
                         else "SNIPER_CONSULAR_ONLY"
                     )
 
+                    consular_detected_at = time.time()
+
                     trigger_updates = {
                         "extension_running": False,
                         "pending": True,
-                        "trigger_timestamp": time.time(),
+                        "trigger_timestamp": consular_detected_at,
                         "trigger_key": alert_key,
                         "action_type": action_type,
+                        "triggerSource": "CVS_CONSULAR",
+                        "targetConsularCity": (
+                            matched_consular_city
+                        ),
+                        "targetConsularDate": (
+                            consular_slot["display_date"]
+                        ),
+                        "targetConsularDetectedAt": (
+                            consular_detected_at
+                        ),
+                        "consularPriorityUpdatedAt": (
+                            consular_detected_at
+                        ),
                         "consularCities": customer[
                             "consular_cities"
                         ],

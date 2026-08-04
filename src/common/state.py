@@ -258,6 +258,94 @@ def try_queue_local_trigger(
             return False, f"resting:{remaining}"
 
         if state.get("extension_running"):
+            incoming_action = str(
+                updates.get("action_type", "")
+            ).strip().upper()
+
+            active_action = str(
+                state.get("action_type", "")
+            ).strip().upper()
+
+            consular_only_actions = {
+                "SNIPER_CONSULAR_ONLY",
+                "RESCHEDULE_FULL_CONSULAR_ONLY",
+            }
+
+            # A newer CVS Consular alert must not start a second
+            # extension execution. Instead, update the priority city
+            # used by the Consular-only scan already in progress.
+            if (
+                state.get("waitingForConsular")
+                and incoming_action in consular_only_actions
+                and active_action in consular_only_actions
+            ):
+                priority_city = str(
+                    updates.get("targetConsularCity")
+                    or updates.get("consularPriorityCity")
+                    or ""
+                ).strip()
+
+                if not priority_city:
+                    return False, "missing_priority_city"
+
+                priority_updated_at = now
+
+                try:
+                    priority_updated_at = float(
+                        updates.get("targetConsularDetectedAt")
+                        or updates.get(
+                            "consularPriorityUpdatedAt"
+                        )
+                        or now
+                    )
+                except (TypeError, ValueError):
+                    priority_updated_at = now
+
+                try:
+                    priority_version = int(
+                        state.get(
+                            "consularPriorityVersion",
+                            0,
+                        )
+                        or 0
+                    ) + 1
+                except (TypeError, ValueError):
+                    priority_version = 1
+
+                state.update(
+                    {
+                        "consularPriorityCity": priority_city,
+                        "targetConsularCity": priority_city,
+                        "targetConsularDate": updates.get(
+                            "targetConsularDate",
+                            "",
+                        ),
+                        "targetConsularDetectedAt": (
+                            updates.get(
+                                "targetConsularDetectedAt"
+                            )
+                            or now
+                        ),
+                        "triggerSource": (
+                            updates.get("triggerSource")
+                            or "CVS_CONSULAR"
+                        ),
+                        "consularPriorityUpdatedAt": (
+                            priority_updated_at
+                        ),
+                        "consularPriorityVersion": (
+                            priority_version
+                        ),
+                        "lastConsularPriorityTriggerKey": (
+                            updates.get("trigger_key", "")
+                        ),
+                    }
+                )
+
+                write_state(state_file, state)
+
+                return True, "priority_updated"
+
             return False, "running"
 
         if state.get("pending"):

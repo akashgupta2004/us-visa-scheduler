@@ -24,6 +24,7 @@ from src.auth.login import login, wait_for_waiting_room
 from src.auth.security import handle_security_question
 from src.common.config import ACCOUNTS_FILE
 from src.common.state import read_state, get_state_file
+from src.common.platform_utils import kill_process_by_port
 
 load_dotenv()
 
@@ -342,17 +343,18 @@ async def poll_account(account, p):
         log.info("Closed browser session and killed login runner.")
 
 def _kill_chrome_by_port(cdp_port: int):
-    import subprocess
     try:
-        output = subprocess.check_output(f"netstat -ano | findstr :{cdp_port}", shell=True, text=True)
-        for line in output.splitlines():
-            parts = line.strip().split()
-            if len(parts) >= 5 and parts[1].endswith(f":{cdp_port}"):
-                pid = parts[-1]
-                if pid != "0":
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True)
-    except Exception:
-        pass
+        killed_pid = kill_process_by_port(cdp_port)
+
+        if killed_pid:
+            log.info(
+                f"Killed Chrome PID {killed_pid} "
+                f"on CDP port {cdp_port}."
+            )
+    except Exception as exc:
+        log.warning(
+            f"Could not kill Chrome on port {cdp_port}: {exc}"
+        )
 
 async def run_polling_loop(cooldown_minutes: int, gap_minutes: int):
     cooldown_map = {}

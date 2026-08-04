@@ -11,6 +11,8 @@ _project_root = str(Path(__file__).resolve().parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 from slack import send as send_slack
+from src.common.state import read_state as _read_state
+
 
 
 async def check_for_page_limit(page: Page, customerName: str, log: logging.Logger) -> bool:
@@ -260,7 +262,13 @@ async def trigger_extension_reschedule(page: Page, trigger: dict, log: logging.L
     return False
 
 
-async def trigger_extension_sniper_consular_only(page: Page, trigger: dict, bookedOfcDate: str, log: logging.Logger) -> tuple[bool, dict]:
+async def trigger_extension_sniper_consular_only(
+    page: Page,
+    trigger: dict,
+    bookedOfcDate: str,
+    log: logging.Logger,
+    state_file: Path | None = None,
+) -> tuple[bool, dict]:
     """
     Send a window.postMessage to the extension's content script
     with the SNIPER_CONSULAR_ONLY configuration.
@@ -288,6 +296,22 @@ async def trigger_extension_sniper_consular_only(page: Page, trigger: dict, book
     log.info(f"   Cities: {', '.join(consularCities)} between {config['consularStartDate']} and {config['consularEndDate']}")
     log.info(f"   bookedOfcDate: {bookedOfcDate}")
 
+    last_priority_version = 0
+
+    if state_file:
+        initial_state = _read_state(state_file)
+
+        try:
+            last_priority_version = int(
+                initial_state.get(
+                    "consularPriorityVersion",
+                    0,
+                )
+                or 0
+            )
+        except (TypeError, ValueError):
+            last_priority_version = 0
+
     await page.evaluate("""
         window.__consularOnlyResult = null;
         window.__consularOnlyResultListener = function(event) {
@@ -308,12 +332,80 @@ async def trigger_extension_sniper_consular_only(page: Page, trigger: dict, book
         }, '*');
     }""", {"config": config, "bookedOfcDate": bookedOfcDate})
 
-    log.info("📨 Consular-Only message sent to extension. Waiting for result (up to 300s) …")
+    log.info("📨 Consular-Only message sent to extension. Waiting for result (up to 600s) …")
 
-    deadline = time.time() + 300
+    deadline = time.time() + 600
     while time.time() < deadline:
         if await check_for_page_limit(page, customerName, log):
             return False, {}
+
+        # Check whether a newer CVS Consular alert arrived while
+        # the extension is already scanning other cities.
+        if state_file:
+            latest_state = _read_state(state_file)
+
+            try:
+                latest_priority_version = int(
+                    latest_state.get(
+                        "consularPriorityVersion",
+                        0,
+                    )
+                    or 0
+                )
+            except (TypeError, ValueError):
+                latest_priority_version = 0
+
+            if latest_priority_version > last_priority_version:
+                latest_priority_city = normalize_city(
+                    str(
+                        latest_state.get("targetConsularCity")
+                        or latest_state.get("consularPriorityCity")
+                        or ""
+                    )
+                )
+
+                latest_priority_date = str(
+                    latest_state.get("targetConsularDate")
+                    or ""
+                )
+
+                latest_detected_at = latest_state.get(
+                    "targetConsularDetectedAt"
+                )
+
+                if latest_priority_city:
+                    try:
+                        await page.evaluate(
+                            """(priority) => {
+                                window.postMessage({
+                                    action: 'CONSULAR_PRIORITY_UPDATE',
+                                    city: priority.city,
+                                    date: priority.date,
+                                    detectedAt: priority.detectedAt,
+                                    version: priority.version
+                                }, '*');
+                            }""",
+                            {
+                                "city": latest_priority_city,
+                                "date": latest_priority_date,
+                                "detectedAt": latest_detected_at,
+                                "version": latest_priority_version,
+                            },
+                        )
+
+                        log.info(
+                            f"⚡ Forwarded newer CVS Consular priority "
+                            f"to active scan: {latest_priority_city} "
+                            f"{latest_priority_date}"
+                        )
+
+                    except Exception as priority_error:
+                        log.warning(
+                            f"Could not forward new Consular priority "
+                            f"to extension: {priority_error}"
+                        )
+
+                last_priority_version = latest_priority_version
 
         try:
             result = await page.evaluate("window.__consularOnlyResult")
@@ -355,7 +447,7 @@ async def trigger_extension_sniper_consular_only(page: Page, trigger: dict, book
 
         await asyncio.sleep(1)
 
-    log.error("⏱️ Timed out waiting for Consular-Only result (300s).")
+    log.error("⏱️ Timed out waiting for Consular-Only result (600s).")
     await page.evaluate("""
         if (window.__consularOnlyResultListener) {
             window.removeEventListener('message', window.__consularOnlyResultListener);

@@ -227,6 +227,9 @@ def load_customers():
             "consular_end":    parse_date(consular_end),
             "prevent_immediate": entry.get("prevent_immediate", False),
             "multiPerson": entry.get("multiPerson", False),
+            "consular_fallback": entry.get(
+                "consular_fallback", False
+            ),
             "role": entry.get("role", "POLLING_ONLY")
         })
 
@@ -307,22 +310,76 @@ def main():
 
                 if bot_state.get("waitingForConsular"):
                     # ── Fallback Consular-Only path (Post-OFC) ───────────────
-                    booked_ofc_date_str = bot_state.get("bookedOfcDate")
-                    if booked_ofc_date_str:
-                        booked_date_obj = parse_date(
-                            booked_ofc_date_str
+                    booked_ofc_date_str = bot_state.get(
+                        "bookedOfcDate"
+                    )
+                    booked_date_obj = (
+                        parse_date(booked_ofc_date_str)
+                        if booked_ofc_date_str
+                        else None
+                    )
+
+                    if customer.get("consular_fallback", False):
+                        # Wide fallback applies only AFTER OFC is booked.
+                        # It does not alter the customer's normal OFC criteria.
+                        consular_cities_to_use = [
+                            normalize_city("CHENNAI"),
+                            normalize_city("MUMBAI"),
+                            normalize_city("HYDERABAD"),
+                            normalize_city("DELHI"),
+                            normalize_city("KOLKATA"),
+                        ]
+
+                        if booked_date_obj:
+                            consular_start_to_use = (
+                                booked_date_obj
+                                + timedelta(days=1)
+                            )
+                        else:
+                            consular_start_to_use = (
+                                datetime.today().replace(
+                                    hour=0,
+                                    minute=0,
+                                    second=0,
+                                    microsecond=0,
+                                )
+                            )
+
+                        consular_end_to_use = (
+                            datetime.today()
+                            + timedelta(days=365)
+                        ).replace(
+                            hour=0,
+                            minute=0,
+                            second=0,
+                            microsecond=0,
                         )
+
+                    else:
+                        # Existing behaviour remains exactly as before.
+                        consular_cities_to_use = customer[
+                            "consular_cities"
+                        ]
+                        consular_start_to_use = (
+                            effective_consular_start
+                        )
+                        consular_end_to_use = customer[
+                            "consular_end"
+                        ]
+
                         if booked_date_obj:
                             minimum_consular_date = (
-                                booked_date_obj + timedelta(days=1)
+                                booked_date_obj
+                                + timedelta(days=1)
                             )
-                            if effective_consular_start:
-                                effective_consular_start = max(
-                                    effective_consular_start,
+
+                            if consular_start_to_use:
+                                consular_start_to_use = max(
+                                    consular_start_to_use,
                                     minimum_consular_date,
                                 )
                             else:
-                                effective_consular_start = (
+                                consular_start_to_use = (
                                     minimum_consular_date
                                 )
 
@@ -331,9 +388,9 @@ def main():
                         matched_consular_city,
                     ) = find_valid_consular_slot(
                         consular_buckets,
-                        customer["consular_cities"],
-                        effective_consular_start,
-                        customer["consular_end"],
+                        consular_cities_to_use,
+                        consular_start_to_use,
+                        consular_end_to_use,
                     )
 
                     if not consular_slot:
@@ -374,24 +431,22 @@ def main():
                         "consularPriorityUpdatedAt": (
                             consular_detected_at
                         ),
-                        "consularCities": customer[
-                            "consular_cities"
-                        ],
+                        "consularCities": consular_cities_to_use,
                         "consularPriorityCity": (
                             matched_consular_city
                         ),
                         "consularStartDate": (
-                            effective_consular_start.strftime(
+                            consular_start_to_use.strftime(
                                 "%Y-%m-%d"
                             )
-                            if effective_consular_start
+                            if consular_start_to_use
                             else ""
                         ),
                         "consularEndDate": (
-                            customer["consular_end"].strftime(
+                            consular_end_to_use.strftime(
                                 "%Y-%m-%d"
                             )
-                            if customer["consular_end"]
+                            if consular_end_to_use
                             else ""
                         ),
                         "customer_name": customer_name,

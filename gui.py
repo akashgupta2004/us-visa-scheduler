@@ -218,6 +218,7 @@ class App(tk.Tk):
         self.var_sync_consular = tk.BooleanVar(value=True)
         self.var_prevent_immediate = tk.BooleanVar(value=False)
         self.var_multi_person = tk.BooleanVar(value=False)
+        self.var_consular_fallback = tk.BooleanVar(value=False)
         self.sq_rows = []
 
         self._build_form()
@@ -409,10 +410,23 @@ class App(tk.Tk):
                                  variable=self.var_prevent_immediate, style="Toolbutton")
         cb_prevent.pack(anchor="w", pady=5)
         
-        cb_multiperson = ttk.Checkbutton(self.options_frame, text="Multi-Person Booking (Book for all dependent family members)", 
-                                 variable=self.var_multi_person, style="Toolbutton")
+        cb_multiperson = ttk.Checkbutton(
+            self.options_frame,
+            text="Multi-Person Booking (Book for all dependent family members)",
+            variable=self.var_multi_person,
+            style="Toolbutton",
+        )
         cb_multiperson.pack(anchor="w", pady=5)
 
+        cb_consular_fallback = ttk.Checkbutton(
+            self.options_frame,
+            text="Wide Consular Fallback after OFC (All 5 cities, up to 1 year)",
+            variable=self.var_consular_fallback,
+            style="Toolbutton",
+        )
+        cb_consular_fallback.pack(anchor="w", pady=5)
+
+        # Security Questions
         # Security Questions
         self.sq_main_frame = ttk.Frame(container, style="Surface.TFrame")
         self.sq_main_frame.pack(fill=tk.X, pady=(15, 0))
@@ -552,9 +566,11 @@ class App(tk.Tk):
 
         self.var_prevent_immediate.set(acc.get("prevent_immediate", False))
         self.var_multi_person.set(acc.get("multiPerson", False))
+        self.var_consular_fallback.set(
+            acc.get("consular_fallback", False)
+        )
 
         self._on_mode_change()
-
         self._clear_sq_rows()
         sq = acc.get("security_questions", {})
         for k, v in sq.items():
@@ -580,6 +596,7 @@ class App(tk.Tk):
         self.var_sync_consular.set(True)
         self.var_prevent_immediate.set(False)
         self.var_multi_person.set(False)
+        self.var_consular_fallback.set(False)
         self._on_mode_change()
         self._clear_sq_rows()
         for _ in range(3): self._add_sq_row()
@@ -633,7 +650,8 @@ class App(tk.Tk):
             "consularEndDate": consular_end,
             "security_questions": sq_dict,
             "prevent_immediate": self.var_prevent_immediate.get(),
-            "multiPerson": self.var_multi_person.get()
+            "multiPerson": self.var_multi_person.get(),
+            "consular_fallback": self.var_consular_fallback.get()
         }
 
         if self.current_account_idx is not None:

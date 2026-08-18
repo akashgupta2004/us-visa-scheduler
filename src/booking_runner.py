@@ -63,6 +63,11 @@ from src.common.db_logger import MongoDBHandler, MongoDBLogger
 from src.auth.login import login, wait_for_waiting_room
 from src.auth.security import handle_security_question
 from src.polling_runner import fetch_dates_via_browser
+from src.common.scout_state import (
+    get_due_scout_window,
+    is_window_stopped,
+    claim_scout_hit,
+)
 
 load_dotenv()
 
@@ -269,7 +274,471 @@ def _match_polled_ofc_dates(results: dict, config: dict) -> tuple[bool, str, str
                 return True, city, date_str
                 
     return False, "", ""
+def _get_scout_position(username: str) -> tuple[int, int]:
+    """
+    Stable local scout order from enabled OFC-capable accounts.
 
+    RESCHEDULE_CONSULAR-only accounts are excluded because this
+    scout is exclusively for OFC detection.
+    """
+    if not ACCOUNTS_FILE.exists():
+        return -1, 0
+
+    try:
+        raw = json.loads(
+            ACCOUNTS_FILE.read_text(encoding="utf-8")
+        )
+    except Exception:
+        return -1, 0
+
+    scout_accounts = []
+
+    for account in raw:
+        if not account.get("enabled", True):
+            continue
+
+        acct_username = str(
+            account.get("username", "")
+        ).strip()
+
+        if not acct_username:
+            continue
+
+        action_mode = str(
+            account.get("action_mode", "SNIPER")
+        ).strip().upper()
+
+        if action_mode == "RESCHEDULE_CONSULAR":
+            continue
+
+        if not account.get("ofcCities"):
+            continue
+
+        if not account.get("ofcStartDate"):
+            continue
+
+        if not account.get("ofcEndDate"):
+            continue
+
+        scout_accounts.append(acct_username)
+
+    try:
+        return scout_accounts.index(username), len(scout_accounts)
+    except ValueError:
+        return -1, len(scout_accounts)
+
+
+async def _broadcast_scout_hit(
+    matched_city: str,
+    matched_date: str,
+    detected_by: str,
+    window_id: str,
+    only_username: str = "",
+    exclude_username: str = "",
+):
+    """
+    Queue the normal OFC booking flow for every qualifying account.
+
+    Existing try_queue_local_trigger() remains the authority for
+    pending/running/rest/completed protection.
+    """
+    if not ACCOUNTS_FILE.exists():
+        return 0
+
+    try:
+        all_accounts = json.loads(
+            ACCOUNTS_FILE.read_text(encoding="utf-8")
+        )
+    except Exception as exc:
+        log.error(
+            f"[SCOUT] Could not read accounts.json: {exc}"
+        )
+        return 0
+
+    candidate_results = {
+        matched_city: [
+            {
+                "Date": matched_date,
+            }
+        ]
+    }
+
+    triggered_count = 0
+
+    for acct_config in all_accounts:
+        if not acct_config.get("enabled", True):
+            continue
+
+        acct_username = str(
+            acct_config.get("username", "")
+        ).strip()
+
+        if not acct_username:
+            continue
+
+        # Optional scout targeting:
+        # - only_username queues only the detecting account
+        # - exclude_username broadcasts to everyone except detector
+        if only_username and acct_username != only_username:
+            continue
+
+        if exclude_username and acct_username == exclude_username:
+            continue
+
+        acct_customer = str(
+            acct_config.get("customer_name", "")
+        ).strip() or acct_username
+
+        action_mode = str(
+            acct_config.get("action_mode", "SNIPER")
+        ).strip().upper()
+
+        # Consular-only accounts must not receive an OFC trigger.
+        if action_mode == "RESCHEDULE_CONSULAR":
+            continue
+
+        matched, _, _ = _match_polled_ofc_dates(
+            candidate_results,
+            acct_config,
+        )
+
+        if not matched:
+            continue
+
+        acct_uid = safe_id(acct_username)
+        acct_state_file = (
+            Path(__file__).parent
+            / f"state_{acct_uid}.json"
+        )
+
+        acct_state = _read_state(acct_state_file)
+
+        # An account already holding OFC and waiting for Consular
+        # must remain completely untouched.
+        if acct_state.get("waitingForConsular"):
+            continue
+
+        action_type = (
+            "RESCHEDULE_FULL"
+            if action_mode == "RESCHEDULE_FULL"
+            else "SNIPER"
+        )
+
+        trigger_key = (
+            f"scout|{window_id}|{acct_uid}|"
+            f"{matched_city.upper()}|"
+            f"{matched_date}|{action_type}"
+        )
+
+        trigger_updates = {
+            "pending": True,
+            "trigger_timestamp": time.time(),
+            "trigger_key": trigger_key,
+            "action_type": action_type,
+            "ofcCities": acct_config.get(
+                "ofcCities", []
+            ),
+            "ofcPriorityCity": matched_city,
+            "ofcPriorityDate": matched_date,
+            "ofcStartDate": acct_config.get(
+                "ofcStartDate", ""
+            ),
+            "ofcEndDate": acct_config.get(
+                "ofcEndDate", ""
+            ),
+            "consularCities": acct_config.get(
+                "consularCities", []
+            ),
+            "consularPriorityCity": acct_config.get(
+                "consularPriorityCity", ""
+            ),
+            "consularStartDate": acct_config.get(
+                "consularStartDate", ""
+            ),
+            "consularEndDate": acct_config.get(
+                "consularEndDate", ""
+            ),
+            "customer_name": acct_customer,
+            "prevent_immediate": acct_config.get(
+                "prevent_immediate", False
+            ),
+            "multiPerson": acct_config.get(
+                "multiPerson", False
+            ),
+        }
+
+        queued, reason = try_queue_local_trigger(
+            acct_state_file,
+            trigger_updates,
+        )
+
+        if queued:
+            triggered_count += 1
+            log.info(
+                f"[SCOUT] ⚡ Queued {acct_customer} for "
+                f"{matched_city} {matched_date}"
+            )
+        else:
+            log.info(
+                f"[SCOUT] ⏭️ {acct_customer} not queued: "
+                f"{reason}"
+            )
+
+    log.info(
+        f"[SCOUT] 🚀 {matched_city} {matched_date} detected "
+        f"by {detected_by}; queued "
+        f"{triggered_count} qualifying account(s)."
+    )
+    return triggered_count
+
+
+async def _try_pre_cvs_scout(
+    page,
+    customer: str,
+    username: str,
+    state: dict,
+    account_position: int,
+    account_count: int,
+    last_window_id: str,
+) -> str:
+    """
+    Perform this account's single assigned official OFC scout check.
+
+    The scout never alters normal polling cooldowns.
+    """
+    due = get_due_scout_window(
+        account_position,
+        last_window_id,
+    )
+
+    if not due:
+        return last_window_id
+
+    window_id = due["window_id"]
+    window_start_epoch = due["window_start_epoch"]
+
+    # Mark locally immediately so this process can never poll twice
+    # in the same scout window.
+    last_window_id = window_id
+
+    if is_window_stopped(
+        window_id,
+        window_start_epoch,
+    ):
+        return last_window_id
+
+    # Never interfere with active/pending bookings or Consular wait.
+    if (
+        state.get("extension_running")
+        or state.get("pending")
+        or state.get("waitingForConsular")
+        or state.get("completed")
+    ):
+        log.info(
+            f"[SCOUT] ⏭️ Assigned check skipped for "
+            f"{customer}: account busy/unavailable."
+        )
+        return last_window_id
+
+    my_config = _load_account_config(username)
+
+    if not my_config:
+        return last_window_id
+
+    log.info(
+        f"[SCOUT] 🔎 {customer} polling official OFC API "
+        f"(position {account_position + 1}/{account_count}, "
+        f"window {window_id}, IST)."
+    )
+
+    try:
+        scout_fetch_task = asyncio.create_task(
+            fetch_dates_via_browser(
+                page,
+                my_config,
+            )
+        )
+
+        live_state_file = (
+            Path(__file__).parent
+            / f"state_{safe_id(username)}.json"
+        )
+
+        while not scout_fetch_task.done():
+            live_state = _read_state(live_state_file)
+
+            # Booking triggers always take priority over scouting.
+            if live_state.get("pending"):
+                scout_fetch_task.cancel()
+
+                try:
+                    await scout_fetch_task
+                except asyncio.CancelledError:
+                    pass
+
+                log.info(
+                    f"[SCOUT] ⚡ Booking trigger arrived while "
+                    f"{customer} was scouting. "
+                    "Scout pre-empted so booking can run immediately."
+                )
+
+                return last_window_id
+
+            await asyncio.sleep(POLL_INTERVAL)
+
+        res = await scout_fetch_task
+
+    except asyncio.CancelledError:
+        raise
+
+    except Exception as exc:
+        log.warning(
+            f"[SCOUT] Official OFC check failed for "
+            f"{customer}: {exc}"
+        )
+        return last_window_id
+
+    # CVS may have arrived while this account was performing
+    # the API fetch. In that case CVS owns the release.
+    if is_window_stopped(
+        window_id,
+        window_start_epoch,
+    ):
+        log.info(
+            f"[SCOUT] 🛑 Window stopped while {customer} "
+            "was polling; ignoring scout result."
+        )
+        return last_window_id
+
+    if _looks_like_expired_session(res):
+        log.warning(
+            f"[SCOUT] {customer} session was not usable; "
+            "skipping this scout result."
+        )
+        return last_window_id
+
+    results = (res or {}).get("results") or {}
+
+    # Diagnostic only: log raw OFC dates before account filtering.
+    raw_dates_found = []
+
+    for city, dates in results.items():
+        if not isinstance(dates, list) or not dates:
+            continue
+
+        raw_dates = []
+
+        for item in dates:
+            if isinstance(item, dict):
+                date_value = item.get("Date", "")
+            else:
+                date_value = item
+
+            date_value = str(date_value or "")[:10]
+
+            if date_value:
+                raw_dates.append(date_value)
+
+        if raw_dates:
+            raw_dates_found.append(
+                f"{city}: {raw_dates}"
+            )
+
+    if raw_dates_found:
+        log.info(
+            f"[SCOUT] 📅 RAW OFC dates seen by {customer}: "
+            + " | ".join(raw_dates_found)
+        )
+
+    matched, matched_city, matched_date = (
+        _match_polled_ofc_dates(
+            results,
+            my_config,
+        )
+    )
+
+    if not matched:
+        log.info(
+            f"[SCOUT] No qualifying OFC date found by "
+            f"{customer}."
+        )
+        return last_window_id
+
+    claimed, reason = claim_scout_hit(
+        window_id,
+        window_start_epoch,
+        matched_city,
+        matched_date,
+        customer,
+    )
+
+    if not claimed:
+        log.info(
+            f"[SCOUT] Hit ignored because window is "
+            f"already owned by {reason}."
+        )
+        return last_window_id
+
+    log.warning(
+        f"[SCOUT] 🎯 PRE-CVS HIT: {customer} found "
+        f"{matched_city} {matched_date}. "
+        "Prioritizing detector booking first."
+    )
+
+    # ---------------------------------------------------------
+    # DETECTOR-FIRST BOOKING
+    #
+    # Queue ONLY the account that actually detected the slot.
+    # It must enter its own booking flow before the wider
+    # scout broadcast is released.
+    # ---------------------------------------------------------
+    detector_queued_count = await _broadcast_scout_hit(
+        matched_city,
+        matched_date,
+        customer,
+        window_id,
+        only_username=username,
+    )
+
+    if detector_queued_count > 0:
+        # Tell the normal pending-trigger path that once this
+        # detector has entered booking, it should release the
+        # same scout hit to all OTHER qualifying accounts.
+        _update_state(
+            live_state_file,
+            {
+                "scout_detector_broadcast_pending": True,
+                "scout_detector_city": matched_city,
+                "scout_detector_date": matched_date,
+                "scout_detector_window_id": window_id,
+                "scout_detector_customer": customer,
+            },
+        )
+
+        log.warning(
+            f"[SCOUT] 🚀 DETECTOR FIRST: {customer} queued for "
+            f"{matched_city} {matched_date}. "
+            "Fleet broadcast will start after detector enters booking."
+        )
+
+    else:
+        # Detector could not book itself, for example because it
+        # entered rest/running/pending state. Do NOT lose the
+        # opportunity — broadcast immediately to everybody else.
+        log.warning(
+            f"[SCOUT] ⚠️ Detector {customer} could not be queued. "
+            "Broadcasting immediately to other qualifying accounts."
+        )
+
+        await _broadcast_scout_hit(
+            matched_city,
+            matched_date,
+            customer,
+            window_id,
+            exclude_username=username,
+        )
+
+    return last_window_id
 async def recover_session(page, customer: str, username: str):
     log.info(f"🔄 Attempting in-place session recovery for '{customer}' ({username})...")
     
@@ -508,6 +977,7 @@ async def _broadcast_results(results: dict, customer: str):
                 "action_type": action_type,
                 "ofcCities": acct_config.get("ofcCities", []),
                 "ofcPriorityCity": matched_city,
+                "ofcPriorityDate": "",
                 "ofcStartDate": acct_config.get(
                     "ofcStartDate", ""
                 ),
@@ -772,6 +1242,7 @@ async def _try_background_poll(page, customer: str, username: str, last_backgrou
                                             "ofcCities", []
                                         ),
                                         "ofcPriorityCity": matched_city,
+                                        "ofcPriorityDate": "",
                                         "ofcStartDate": my_config.get(
                                             "ofcStartDate", ""
                                         ),
@@ -919,6 +1390,11 @@ async def run(cdp_port: int, customer: str, username: str):
         runner_start_time = time.time()
         last_keep_alive = time.time()
 
+        scout_position = -1
+        scout_count = 0
+        last_scout_roster_refresh = 0.0
+        last_scout_window_id = ""
+
         while True:
             try:
                 # ── Check Rest Period FIRST ───────────────────────────────
@@ -931,6 +1407,39 @@ async def run(cdp_port: int, customer: str, username: str):
                     log.info("💤 Account is in a rest period. Ignoring and clearing pending booking trigger.")
                     _update_state(state_file, {"pending": False})
                     state["pending"] = False
+
+                # ── Pre-CVS OFC scout layer ────────────────────────────────
+                # Refresh local account order periodically so GUI/account
+                # changes are picked up without restarting the runner.
+                if (
+                    time.time() - last_scout_roster_refresh
+                    > 30
+                ):
+                    scout_position, scout_count = (
+                        _get_scout_position(username)
+                    )
+                    last_scout_roster_refresh = time.time()
+
+                last_scout_window_id = (
+                    await _try_pre_cvs_scout(
+                        page,
+                        customer,
+                        username,
+                        state,
+                        scout_position,
+                        scout_count,
+                        last_scout_window_id,
+                    )
+                )
+
+                # A scout hit may have just queued this same account.
+                # Re-read state before entering the EXISTING trigger flow.
+                state = _read_state(state_file)
+                rest_until = state.get("rest_until", 0)
+                is_resting = bool(
+                    rest_until
+                    and time.time() < rest_until
+                )
 
                 # ── Check for pending trigger ───────────────────────────────
                 if state.get("pending") and not is_resting:
@@ -955,14 +1464,19 @@ async def run(cdp_port: int, customer: str, username: str):
                             f"it is {trigger_delay:.1f} seconds old."
                         )
 
+                    
                         _update_state(
                             state_file,
                             {
                                 "pending": False,
                                 "extension_running": False,
+                                "scout_detector_broadcast_pending": False,
+                                "scout_detector_city": "",
+                                "scout_detector_date": "",
+                                "scout_detector_window_id": "",
+                                "scout_detector_customer": "",
                             },
                         )
-
                         last_keep_alive = time.time()
                         await asyncio.sleep(0.1)
                         continue
@@ -979,6 +1493,130 @@ async def run(cdp_port: int, customer: str, username: str):
                     log.info(
                         f"📥 Pending trigger detected for '{customer}'."
                     )
+
+                    # -------------------------------------------------
+                    # SCOUT DETECTOR-FIRST RELEASE
+                    #
+                    # Do NOT release the fleet merely because the
+                    # detector has entered extension_running state.
+                    #
+                    # The detector must first send EXECUTE_SNIPER to
+                    # its extension. executor.py will then invoke the
+                    # callback below and release the remaining accounts.
+                    #
+                    # A 1-second fallback prevents a stuck detector
+                    # from holding the whole fleet.
+                    # -------------------------------------------------
+                    scout_detector_release_callback = None
+
+                    if state.get("scout_detector_broadcast_pending"):
+                        scout_city = str(
+                            state.get(
+                                "scout_detector_city",
+                                "",
+                            )
+                        ).strip()
+
+                        scout_date = str(
+                            state.get(
+                                "scout_detector_date",
+                                "",
+                            )
+                        ).strip()
+
+                        scout_window_id = str(
+                            state.get(
+                                "scout_detector_window_id",
+                                "",
+                            )
+                        ).strip()
+
+                        scout_detected_by = str(
+                            state.get(
+                                "scout_detector_customer",
+                                customer,
+                            )
+                        ).strip()
+
+                        # Clear persistent state immediately.
+                        # The local guarded callback now owns release.
+                        _update_state(
+                            state_file,
+                            {
+                                "scout_detector_broadcast_pending": False,
+                                "scout_detector_city": "",
+                                "scout_detector_date": "",
+                                "scout_detector_window_id": "",
+                                "scout_detector_customer": "",
+                            },
+                        )
+
+                        if (
+                            scout_city
+                            and scout_date
+                            and scout_window_id
+                        ):
+                            release_guard = {
+                                "released": False,
+                                "lock": asyncio.Lock(),
+                            }
+
+                            async def _release_scout_fleet(
+                                reason: str,
+                                guard=release_guard,
+                                city=scout_city,
+                                date=scout_date,
+                                window_id=scout_window_id,
+                                detected_by=scout_detected_by,
+                                detector_username=username,
+                                detector_customer=customer,
+                            ):
+                                async with guard["lock"]:
+                                    if guard["released"]:
+                                        return
+
+                                    guard["released"] = True
+
+                                _queue_background_task(
+                                    _broadcast_scout_hit(
+                                        city,
+                                        date,
+                                        detected_by,
+                                        window_id,
+                                        exclude_username=detector_username,
+                                    )
+                                )
+
+                                log.info(
+                                    f"[SCOUT] 📣 Fleet released after "
+                                    f"{reason}: detector "
+                                    f"{detector_customer}; "
+                                    f"{city} {date}."
+                                )
+
+                            async def _release_after_detector_message(
+                                release_func=_release_scout_fleet,
+                            ):
+                                await release_func(
+                                    "detector extension message sent"
+                                )
+
+                            scout_detector_release_callback = (
+                                _release_after_detector_message
+                            )
+
+                            async def _detector_release_fallback(
+                                release_func=_release_scout_fleet,
+                            ):
+                                await asyncio.sleep(1.0)
+
+                                await release_func(
+                                    "1-second detector safety fallback"
+                                )
+
+                            _queue_background_task(
+                                _detector_release_fallback()
+                            )
 
                     if trigger_delay is not None:
                         if trigger_delay > 10.0:
@@ -997,7 +1635,7 @@ async def run(cdp_port: int, customer: str, username: str):
 
                     trigger = {k: state[k] for k in [
                         "action_type",
-                        "ofcCities", "ofcPriorityCity", "ofcStartDate", "ofcEndDate",
+                        "ofcCities", "ofcPriorityCity", "ofcPriorityDate", "ofcStartDate", "ofcEndDate",
                         "consularCities", "consularPriorityCity", "consularStartDate", "consularEndDate",
                         "customer_name", "prevent_immediate", "multiPerson"
                     ] if k in state}
@@ -1026,10 +1664,21 @@ async def run(cdp_port: int, customer: str, username: str):
                     try:
                         if action_type == "SNIPER":
                             log.info(f"🎯 Action type: {action_type}")
-                            success, context = await trigger_extension_booking(page, trigger, log)
+                            success, context = await trigger_extension_booking(
+                                page,
+                                trigger,
+                                log,
+                                on_message_sent=scout_detector_release_callback,
+                            )
+
                         elif action_type == "RESCHEDULE_FULL":
                             log.info(f"🔄 Action type: {action_type}")
-                            success, context = await trigger_extension_booking(page, trigger, log)
+                            success, context = await trigger_extension_booking(
+                                page,
+                                trigger,
+                                log,
+                                on_message_sent=scout_detector_release_callback,
+                            )
                         elif action_type == "SNIPER_CONSULAR_ONLY":
                             log.info(
                                 "🎯 Action type: "

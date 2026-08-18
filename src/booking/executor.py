@@ -47,7 +47,12 @@ def normalize_city(city: str) -> str:
     return CITY_NORMALIZE.get(upper, upper)
 
 
-async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logger) -> tuple[bool, dict]:
+async def trigger_extension_booking(
+    page: Page,
+    trigger: dict,
+    log: logging.Logger,
+    on_message_sent=None,
+) -> tuple[bool, dict]:
     """
     Send a window.postMessage to the extension's content script
     with the booking configuration built from the trigger file.
@@ -71,6 +76,7 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
         "isReschedule": trigger.get("action_type") == "RESCHEDULE_FULL",
         "ofcCities": ofcCities,
         "ofcPriorityCity": normalize_city(trigger.get("ofcPriorityCity", ofcCities[0] if ofcCities else "")),
+        "ofcPriorityDate": trigger.get("ofcPriorityDate", ""),
         "ofcStartDate": trigger.get("ofcStartDate", ""),
         "ofcEndDate": trigger.get("ofcEndDate", ""),
         "consularCities": consularCities,
@@ -106,6 +112,21 @@ async def trigger_extension_booking(page: Page, trigger: dict, log: logging.Logg
     }""", config)
 
     log.info("📨 Message sent to extension. Waiting for result (up to 300s) …")
+
+    # Optional hook used only by PRE-CVS detector-first booking.
+    # At this point the detector's EXECUTE_SNIPER message has already
+    # been posted to the page/extension, so the rest of the fleet may
+    # safely be released without getting ahead of the detector.
+    if on_message_sent is not None:
+        try:
+            await on_message_sent()
+        except Exception as callback_error:
+            # Never allow fleet-broadcast bookkeeping to interfere
+            # with the detector's own booking attempt.
+            log.warning(
+                f"[SCOUT] Could not release detector-first fleet "
+                f"broadcast: {callback_error}"
+            )
 
     deadline = time.time() + 300
     while time.time() < deadline:

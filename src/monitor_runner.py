@@ -33,6 +33,7 @@ from src.common.state import (
     read_state as _read_bot_state,
     try_queue_local_trigger,
 )
+from src.common.scout_state import mark_cvs_stop
 from slack import format_slack_message, send_slack, send_slack_error
 
 ALERT_COOLDOWN_SECONDS = 15 * 60
@@ -168,6 +169,13 @@ def _write_trigger_if_idle(
         return current_triggers, True
 
     print(f"✅ CVS trigger queued for '{customer_name}'.")
+
+    # First successfully queued CVS trigger owns this release.
+    # This only stops the additive scout layer; existing CVS flow
+    # continues completely unchanged.
+    if current_triggers == 0:
+        mark_cvs_stop()
+
     return current_triggers + 1, True
 
 def load_customers():
@@ -645,6 +653,7 @@ def main():
                     "action_type": action_type,
                     "ofcCities": customer["ofc_cities"],
                     "ofcPriorityCity": matched_ofc_city,
+                    "ofcPriorityDate": "",
                     "ofcStartDate": (
                         effective_ofc_start.strftime("%Y-%m-%d")
                         if effective_ofc_start

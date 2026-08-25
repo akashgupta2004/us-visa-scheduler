@@ -18,6 +18,7 @@ SCOUT_STARTS = (
 )
 
 SCOUT_SPACING_SECONDS = 2
+SCOUT_CYCLES = 2
 SCOUT_DUE_TOLERANCE_SECONDS = 1.5
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -167,26 +168,43 @@ def claim_scout_hit(
 
 def get_due_scout_window(
     account_position: int,
+    account_count: int,
     last_window_id: str,
 ):
     """
     Return the scout window due NOW for this account position.
 
-    Account 0 = +0 sec
-    Account 1 = +2 sec
-    Account 2 = +4 sec
-    etc.
+    Each configured SCOUT_START runs SCOUT_CYCLES times.
+
+    Example with 35 accounts and 2-second spacing:
+
+    Cycle 1:
+        Account 0  = +0 sec
+        Account 1  = +2 sec
+        ...
+        Account 34 = +68 sec
+
+    Cycle 2 starts immediately after the first account-start cycle:
+        Account 0  = +70 sec
+        Account 1  = +72 sec
+        ...
+        Account 34 = +138 sec
+
+    Each cycle gets its own window_id and window_start_epoch so:
+    - a Scout hit in cycle 1 does not permanently block cycle 2
+    - a CVS stop during cycle 1 does not incorrectly stop cycle 2
+    - existing Scout/CVS coordination remains unchanged
 
     All scheduling is explicitly Asia/Kolkata.
     """
-    if account_position < 0:
+    if account_position < 0 or account_count <= 0:
         return None
 
     now = datetime.now(IST)
     candidates = []
 
-    # previous hour is needed for the :59:55 window carrying
-    # into the following hour.
+    # Previous hour is needed for the :59:55 window,
+    # including cycle 2, which carries into the next hour.
     for hours_back in (0, 1):
         hour_base = (
             now - timedelta(hours=hours_back)
@@ -197,35 +215,50 @@ def get_due_scout_window(
         )
 
         for minute, second in SCOUT_STARTS:
-            start = hour_base.replace(
+            anchor_start = hour_base.replace(
                 minute=minute,
                 second=second,
             )
 
-            due = start + timedelta(
-                seconds=account_position
-                * SCOUT_SPACING_SECONDS
-            )
-
-            lateness = (now - due).total_seconds()
-
-            if (
-                0 <= lateness
-                <= SCOUT_DUE_TOLERANCE_SECONDS
+            for cycle_number in range(
+                1,
+                SCOUT_CYCLES + 1,
             ):
-                window_id = start.strftime(
-                    "%Y%m%d-%H%M%S"
+                cycle_offset_seconds = (
+                    (cycle_number - 1)
+                    * account_count
+                    * SCOUT_SPACING_SECONDS
                 )
 
-                if window_id != last_window_id:
-                    candidates.append(
-                        (
-                            lateness,
-                            window_id,
-                            start.timestamp(),
-                            due,
-                        )
+                cycle_start = anchor_start + timedelta(
+                    seconds=cycle_offset_seconds
+                )
+
+                due = cycle_start + timedelta(
+                    seconds=account_position
+                    * SCOUT_SPACING_SECONDS
+                )
+
+                lateness = (now - due).total_seconds()
+
+                if (
+                    0 <= lateness
+                    <= SCOUT_DUE_TOLERANCE_SECONDS
+                ):
+                    window_id = (
+                        f"{anchor_start.strftime('%Y%m%d-%H%M%S')}"
+                        f"-c{cycle_number}"
                     )
+
+                    if window_id != last_window_id:
+                        candidates.append(
+                            (
+                                lateness,
+                                window_id,
+                                cycle_start.timestamp(),
+                                due,
+                            )
+                        )
 
     if not candidates:
         return None

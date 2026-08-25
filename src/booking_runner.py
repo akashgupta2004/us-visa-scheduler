@@ -506,10 +506,12 @@ async def _try_pre_cvs_scout(
 
     The scout never alters normal polling cooldowns.
     """
+    
     due = get_due_scout_window(
         account_position,
+        account_count,
         last_window_id,
-    )
+    )   
 
     if not due:
         return last_window_id

@@ -85,12 +85,40 @@ async def trigger_extension_booking(
         "consularEndDate": trigger.get("consularEndDate", ""),
         "preventImmediateBooking": trigger.get("prevent_immediate", False),
         "multiPerson": trigger.get("multiPerson", False),
+                "scoutOfcToken": trigger.get(
+            "scoutOfcToken", ""
+        ),
+        "scoutOfcAppd": trigger.get(
+            "scoutOfcAppd", ""
+        ),
+        "scoutOfcTokenCity": normalize_city(
+            trigger.get(
+                "scoutOfcTokenCity",
+                "",
+            )
+        ),
+        "scoutOfcTokenDate": trigger.get(
+            "scoutOfcTokenDate", ""
+        ),
+        "scoutOfcTokenIsReschedule": trigger.get(
+            "scoutOfcTokenIsReschedule",
+            False,
+        ),
+        "scoutOfcTokenCapturedAt": trigger.get(
+            "scoutOfcTokenCapturedAt",
+            0,
+        ),
     }
 
     log.info(f"🚀 Triggering extension booking for '{customerName}'")
     log.info(f"   OFC: {', '.join(ofcCities)} between {config['ofcStartDate']} and {config['ofcEndDate']}")
     log.info(f"   Consular: {', '.join(consularCities)} between {config['consularStartDate']} and {config['consularEndDate']}")
-    log.info(f"   Config: {json.dumps(config)}")
+    log_config = dict(config)
+
+    if log_config.get("scoutOfcToken"):
+        log_config["scoutOfcToken"] = "<preserved>"
+
+    log.info(f"   Config: {json.dumps(log_config)}")
 
     await page.evaluate("""
         window.__sniperResult = null;

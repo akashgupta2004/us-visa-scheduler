@@ -187,12 +187,17 @@ async def fetch_dates_via_browser(page, match_config=None):
                                 `Stopping remaining city polling.`
                             );
 
+                            
                             return {
                                 success: true,
                                 results: results,
                                 earlyMatch: {
                                     city: city,
-                                    date: matchedDate
+                                    date: matchedDate,
+                                    token: String(data.Token || ""),
+                                    appd: appd,
+                                    isReschedule: isRescheduleUrl,
+                                    capturedAt: Date.now()
                                 }
                             };
                         }

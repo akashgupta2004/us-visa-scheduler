@@ -335,6 +335,7 @@ async def _broadcast_scout_hit(
     window_id: str,
     only_username: str = "",
     exclude_username: str = "",
+    scout_fastpath=None,
 ):
     """
     Queue the normal OFC booking flow for every qualifying account.
@@ -466,6 +467,41 @@ async def _broadcast_scout_hit(
                 "multiPerson", False
             ),
         }
+
+        # Scout token fast-path is ONLY for the account that
+        # actually made the qualifying Dates request.
+                # Scout token fast-path is ONLY for the account that
+        # actually made the qualifying Dates request.
+        if only_username and scout_fastpath:
+            scout_token = str(
+                scout_fastpath.get("token", "")
+            ).strip()
+
+            if scout_token:
+                trigger_updates.update(
+                    {
+                        "scoutOfcToken": scout_token,
+                        "scoutOfcAppd": str(
+                            scout_fastpath.get("appd", "")
+                        ).strip(),
+                        "scoutOfcTokenCity": matched_city,
+                        "scoutOfcTokenDate": matched_date,
+                        "scoutOfcTokenIsReschedule": bool(
+                            scout_fastpath.get(
+                                "isReschedule",
+                                False,
+                            )
+                        ),
+                        "scoutOfcTokenCapturedAt": int(
+                            scout_fastpath.get(
+                                "capturedAt",
+                                0,
+                            )
+                            or 0
+                        ),
+                    }
+                )
+
 
         queued, reason = try_queue_local_trigger(
             acct_state_file,
@@ -694,12 +730,41 @@ async def _try_pre_cvs_scout(
     # It must enter its own booking flow before the wider
     # scout broadcast is released.
     # ---------------------------------------------------------
+    early_match = (res or {}).get("earlyMatch") or {}
+
+    scout_fastpath = None
+
+    if (
+        str(early_match.get("city", "")).upper()
+        == str(matched_city).upper()
+        and str(early_match.get("date", ""))
+        == str(matched_date)
+        and early_match.get("token")
+    ):
+        scout_fastpath = {
+            "token": early_match.get("token"),
+            "appd": early_match.get("appd", ""),
+            "isReschedule": early_match.get(
+                "isReschedule",
+                False,
+            ),
+            "capturedAt": early_match.get(
+                "capturedAt",
+                0,
+            ),
+        }
+
+        log.info(
+            f"[SCOUT-FAST] Preserved Dates token for "
+            f"{customer}: {matched_city} {matched_date}."
+        )
     detector_queued_count = await _broadcast_scout_hit(
         matched_city,
         matched_date,
         customer,
         window_id,
         only_username=username,
+        scout_fastpath=scout_fastpath,
     )
 
     if detector_queued_count > 0:
@@ -1641,7 +1706,32 @@ async def run(cdp_port: int, customer: str, username: str):
                         "consularCities", "consularPriorityCity", "consularStartDate", "consularEndDate",
                         "customer_name", "prevent_immediate", "multiPerson"
                     ] if k in state}
+                    trigger = {k: state[k] for k in [
+                        "action_type",
+                        "ofcCities", "ofcPriorityCity", "ofcPriorityDate", "ofcStartDate", "ofcEndDate",
+                        "consularCities", "consularPriorityCity", "consularStartDate", "consularEndDate",
+                        "customer_name", "prevent_immediate", "multiPerson",
+                        "scoutOfcToken",
+                        "scoutOfcAppd",
+                        "scoutOfcTokenCity",
+                        "scoutOfcTokenDate",
+                        "scoutOfcTokenIsReschedule",
+                        "scoutOfcTokenCapturedAt",
+                    ] if k in state}
 
+# One-shot token: remove it from persistent state immediately.
+                    if trigger.get("scoutOfcToken"):
+                        _update_state(
+                            state_file,
+                            {
+                                "scoutOfcToken": "",
+                                "scoutOfcAppd": "",
+                                "scoutOfcTokenCity": "",
+                                "scoutOfcTokenDate": "",
+                                "scoutOfcTokenIsReschedule": False,
+                                "scoutOfcTokenCapturedAt": 0,
+                            },
+                        )
                     # ── Re-navigate if needed ──────────────────────────────────
                     try:
                         if not page.url.startswith("https://www.usvisascheduling.com"):

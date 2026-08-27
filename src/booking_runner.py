@@ -1386,14 +1386,16 @@ async def run(cdp_port: int, customer: str, username: str):
     # Custom logger formatting to show customer prefix
     log.name = f"booking:{customer}"
     
-    # Initialise state file — mark extension as not running on startup, but preserve pending triggers
-    _update_state(state_file, {
-        "extension_running": False,
-        "customer_name": customer,
-        "waitingForConsular": False,
-        "bookedOfcDate": None,
-        "waitStartTime": None
-    })
+ 
+    # Initialise runner-owned fields only.
+# IMPORTANT: Never erase an existing temporary OFC hold on runner restart.
+    _update_state(
+        state_file,
+        {
+            "extension_running": False,
+            "customer_name": customer,
+        },
+    )
 
     
     last_background_poll = 0
@@ -1823,24 +1825,36 @@ async def run(cdp_port: int, customer: str, username: str):
                         success = False
 
                         if "429" in str(e):
+                            is_waiting = state.get(
+                                "waitingForConsular",
+                                False,
+                            )
+
+                            if is_waiting:
+                                log.warning(
+                                    "⚠️ 429 during Consular WAIT MODE. "
+                                    "The temporary OFC hold is being preserved. "
+                                    "Returning to wait mode for the next CVS Consular alert."
+                                )
+
+                                _update_state(
+                                    state_file,
+                                    {
+                                        "pending": False,
+                                        "extension_running": False,
+                                    },
+                                )
+
+                                # Do NOT clear waitingForConsular/bookedOfcDate/waitStartTime.
+                                # Do NOT enter booking rest during the temporary OFC hold.
+                                # A very short pause only avoids immediately hammering the endpoint.
+                                await asyncio.sleep(5)
+                                continue
+
                             log.error(
                                 "429 Too Many Requests detected! "
                                 "Exiting bot2 with code 42 to signal a restart."
                             )
-
-                            if state.get("waitingForConsular"):
-                                log.warning(
-                                    "WAITING MODE is over (429 hit). "
-                                    "Resetting flags."
-                                )
-                                _update_state(
-                                    state_file,
-                                    {
-                                        "waitingForConsular": False,
-                                        "bookedOfcDate": None,
-                                        "waitStartTime": None,
-                                    },
-                                )
 
                             _enter_booking_rest(
                                 state_file,
@@ -1849,6 +1863,7 @@ async def run(cdp_port: int, customer: str, username: str):
                             )
                             sys.exit(42)
 
+                       
                         if "Session expired" in str(e):
                             is_waiting = state.get(
                                 "waitingForConsular",
@@ -1856,21 +1871,11 @@ async def run(cdp_port: int, customer: str, username: str):
                             )
 
                             if is_waiting:
-                                log.error(
-                                    "🚨 Session expired during Consular "
-                                    "WAIT MODE. Clearing the current wait "
-                                    "state before recovery."
+                                log.warning(
+                                    "⚠️ Consular request reported session expiry while "
+                                    "a temporary OFC hold is active. Preserving OFC "
+                                    "WAIT MODE and validating the browser session."
                                 )
-                                _update_state(
-                                    state_file,
-                                    {
-                                        "waitingForConsular": False,
-                                        "bookedOfcDate": None,
-                                        "waitStartTime": None,
-                                    },
-                                )
-                                context["waitingForConsular"] = False
-                                context["bookedOfcDate"] = None
                             else:
                                 log.error(
                                     "Session expired during booking action. "
@@ -1883,6 +1888,35 @@ async def run(cdp_port: int, customer: str, username: str):
                                 username,
                             )
 
+                            if is_waiting:
+                                # Regardless of what the failed Consular request reported,
+                                # the OFC hold remains authoritative until the 50-minute
+                                # hold window expires.
+                                _update_state(
+                                    state_file,
+                                    {
+                                        "pending": False,
+                                        "extension_running": False,
+                                    },
+                                )
+
+                                if not recovered:
+                                    log.error(
+                                        "Session validation/recovery failed during "
+                                        "Consular WAIT MODE. Preserving the OFC hold "
+                                        "state and restarting the runner."
+                                    )
+                                    sys.exit(1)
+
+                                log.info(
+                                    "✅ Browser session is usable/recovered. "
+                                    "Temporary OFC hold preserved; waiting for the "
+                                    "next qualifying CVS Consular alert."
+                                )
+                                continue
+
+    # Normal non-waiting booking failure keeps existing behaviour.
+                            # Normal non-waiting booking failure keeps existing behaviour.
                             _enter_booking_rest(
                                 state_file,
                                 customer,
@@ -1902,7 +1936,6 @@ async def run(cdp_port: int, customer: str, username: str):
                                 "blocked until booking rest expires."
                             )
                             continue
-
                     if success:
                         log.info("=" * 60)
                         log.info(f"✅ ACTION COMPLETED SUCCESSFULLY for '{customer}'! [{action_type}]")
@@ -2022,16 +2055,32 @@ async def run(cdp_port: int, customer: str, username: str):
                             last_keep_alive = time.time()
                             await asyncio.sleep(0.5)
                             continue
+                        
                         else:
-                            log.error(f"❌ Action failed for '{customer}'. [{action_type}]")
+                            log.error(
+                                f"❌ Action failed for '{customer}'. "
+                                f"[{action_type}]"
+                            )
+
                             if state.get("waitingForConsular"):
-                                log.warning("WAITING MODE is over (action failed completely). Resetting flags.")
-                                _update_state(state_file, {
-                                    "waitingForConsular": False,
-                                    "bookedOfcDate": None,
-                                    "waitStartTime": None
-                                })
-                                
+                                log.warning(
+                                    "⏳ Consular-only attempt failed. "
+                                    "Temporary OFC hold is still active; "
+                                    "returning to WAIT MODE."
+                                )
+
+                                _update_state(
+                                    state_file,
+                                    {
+                                        "pending": False,
+                                        "extension_running": False,
+                                    },
+                                )
+
+                                last_keep_alive = time.time()
+                                await asyncio.sleep(0.5)
+                                continue
+
                             _enter_booking_rest(
                                 state_file,
                                 customer,
@@ -2048,12 +2097,46 @@ async def run(cdp_port: int, customer: str, username: str):
                 # ── If NO trigger, do maintenance ──────────────────────────────
                 await asyncio.sleep(POLL_INTERVAL)
                 
-                                # ── Consular wait mode ────────────────────────────────────────
+                # ── Consular wait mode ────────────────────────────────────────
                 # Do not automatically attempt Consular after OFC booking.
                 # Keep waitingForConsular active and wait only for a CVS trigger.
                 state = _read_state(state_file)
 
-                # ── Background API Polling ────────────────────────────────────
+                # A temporarily-booked OFC is held for approximately 50 minutes.
+                # During that entire window, preserve Consular-only wait mode.
+                # Once the window expires, release the Python-side hold so the
+                # account may book OFC again.
+                if state.get("waitingForConsular"):
+                    wait_start = float(
+                        state.get("waitStartTime") or 0
+                    )
+
+                    if (
+                        wait_start
+                        and time.time() - wait_start >= 50 * 60
+                    ):
+                        log.warning(
+                            f"⌛ 50-minute temporary OFC hold window expired "
+                            f"for '{customer}'. Clearing WAIT MODE so OFC "
+                            "can be booked again."
+                        )
+
+                        _update_state(
+                            state_file,
+                            {
+                                "waitingForConsular": False,
+                                "bookedOfcDate": None,
+                                "bookedOfcCity": None,
+                                "waitStartTime": None,
+                                "pending": False,
+                                "extension_running": False,
+                                "rest_until": 0,
+                            },
+                        )
+
+                        state = _read_state(state_file)
+
+                # ── Background API Polling ────────────────────────────────────                # ── Background API Polling ────────────────────────────────────
                 current_account_role = "POLLING_ONLY"
                 if ACCOUNTS_FILE.exists():
                     try:

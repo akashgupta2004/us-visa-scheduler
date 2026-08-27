@@ -21,6 +21,27 @@ SCOUT_SPACING_SECONDS = 2
 SCOUT_CYCLES = 2
 SCOUT_DUE_TOLERANCE_SECONDS = 1.5
 
+# Consular Scout uses the same historical release windows as OFC,
+# but is coordinated completely separately.
+#
+# These four anchors, together with the existing 2-cycle account
+# staggering, cover the two observed Consular release regions:
+#
+#   :25–:34
+#   :55–:04
+#
+# Do NOT merge this with SCOUT_STARTS. Keeping it separate allows
+# Consular Scout timing to be changed later without affecting OFC Scout.
+CONSULAR_SCOUT_STARTS = (
+    (25, 55),
+    (29, 55),
+    (55, 55),
+    (59, 55),
+)
+
+CONSULAR_SCOUT_SPACING_SECONDS = 2
+CONSULAR_SCOUT_CYCLES = 2
+CONSULAR_SCOUT_DUE_TOLERANCE_SECONDS = 1.5
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 SCOUT_DIR = PROJECT_ROOT / "logs"
 SCOUT_STATE_FILE = SCOUT_DIR / "scout_state.json"
@@ -165,7 +186,96 @@ def claim_scout_hit(
     except Exception:
         return False, "lock_timeout"
 
+def claim_consular_scout_hit(
+    window_id: str,
+    city: str,
+    date_str: str,
+    detected_by: str,
+) -> tuple[bool, str]:
+    """
+    Atomically claim one Consular Scout city/date discovery.
 
+    IMPORTANT:
+    Unlike OFC Scout, one Consular hit does NOT stop the whole
+    scout window.
+
+    Example:
+        HYDERABAD 2026-09-10 may be detected first,
+        then NEW DELHI 2026-09-04 may appear seconds later.
+
+    Both must remain actionable.
+
+    Therefore deduplication is only:
+
+        window_id + city + date
+
+    This state is completely separate from existing OFC Scout
+    coordination and from cvs_stop_at.
+    """
+    try:
+        normalized_city = str(city or "").strip().upper()
+        normalized_date = str(date_str or "").strip()
+
+        if not window_id or not normalized_city or not normalized_date:
+            return False, "invalid_hit"
+
+        hit_key = (
+            f"{window_id}|"
+            f"{normalized_city}|"
+            f"{normalized_date}"
+        )
+
+        now = time.time()
+
+        with _state_lock():
+            state = _read_unlocked()
+
+            hits = state.get("consular_scout_hits")
+
+            if not isinstance(hits, dict):
+                hits = {}
+
+            # Prevent scout_state.json from growing forever.
+            # Anything older than six hours is irrelevant to
+            # current Consular Scout coordination.
+            cutoff = now - (6 * 60 * 60)
+
+            cleaned_hits = {}
+
+            for key, value in hits.items():
+                try:
+                    hit_at = float(
+                        (value or {}).get("detected_at", 0)
+                    )
+                except (TypeError, ValueError):
+                    hit_at = 0
+
+                if hit_at >= cutoff:
+                    cleaned_hits[key] = value
+
+            hits = cleaned_hits
+
+            if hit_key in hits:
+                return False, "consular_scout_already_hit"
+
+            hits[hit_key] = {
+                "window_id": window_id,
+                "city": normalized_city,
+                "date": normalized_date,
+                "detected_by": detected_by,
+                "detected_at": now,
+            }
+
+            state["consular_scout_hits"] = hits
+
+            _write_unlocked(state)
+
+        return True, "claimed"
+
+    except Exception:
+        # Scout coordination failure must never interfere with
+        # the existing booking / CVS flow.
+        return False, "lock_timeout"
 def get_due_scout_window(
     account_position: int,
     account_count: int,
@@ -264,6 +374,116 @@ def get_due_scout_window(
         return None
 
     candidates.sort(key=lambda item: item[0])
+
+    _, window_id, start_epoch, due = candidates[0]
+
+    return {
+        "window_id": window_id,
+        "window_start_epoch": start_epoch,
+        "due": due,
+    }
+def get_due_consular_scout_window(
+    account_position: int,
+    account_count: int,
+    last_window_id: str,
+):
+    """
+    Return the Consular Scout window due NOW for this account.
+
+    This intentionally mirrors the existing OFC Scout scheduling,
+    but uses its own namespace and constants.
+
+    Consular release coverage:
+
+        :25:55
+        :29:55
+        :55:55
+        :59:55
+
+    Each anchor runs two cycles with the existing fleet-style
+    account staggering.
+
+    The window IDs are prefixed with "consular-" so they can
+    never collide with normal OFC Scout window IDs.
+
+    Scheduling is explicitly Asia/Kolkata.
+    """
+
+    if account_position < 0 or account_count <= 0:
+        return None
+
+    now = datetime.now(IST)
+
+    candidates = []
+
+    # Previous hour is required for the :59:55 anchor because
+    # the two cycles can continue into the next hour.
+    for hours_back in (0, 1):
+        hour_base = (
+            now - timedelta(hours=hours_back)
+        ).replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+
+        for minute, second in CONSULAR_SCOUT_STARTS:
+            anchor_start = hour_base.replace(
+                minute=minute,
+                second=second,
+            )
+
+            for cycle_number in range(
+                1,
+                CONSULAR_SCOUT_CYCLES + 1,
+            ):
+                cycle_offset_seconds = (
+                    (cycle_number - 1)
+                    * account_count
+                    * CONSULAR_SCOUT_SPACING_SECONDS
+                )
+
+                cycle_start = anchor_start + timedelta(
+                    seconds=cycle_offset_seconds
+                )
+
+                due = cycle_start + timedelta(
+                    seconds=(
+                        account_position
+                        * CONSULAR_SCOUT_SPACING_SECONDS
+                    )
+                )
+
+                lateness = (
+                    now - due
+                ).total_seconds()
+
+                if (
+                    0 <= lateness
+                    <= CONSULAR_SCOUT_DUE_TOLERANCE_SECONDS
+                ):
+                    window_id = (
+                        "consular-"
+                        f"{anchor_start.strftime('%Y%m%d-%H%M%S')}"
+                        f"-c{cycle_number}"
+                    )
+
+                    if window_id != last_window_id:
+                        candidates.append(
+                            (
+                                lateness,
+                                window_id,
+                                cycle_start.timestamp(),
+                                due,
+                            )
+                        )
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda item: item[0]
+    )
 
     _, window_id, start_epoch, due = candidates[0]
 

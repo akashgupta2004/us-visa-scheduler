@@ -317,6 +317,7 @@ async def trigger_extension_sniper_consular_only(
     bookedOfcDate: str,
     log: logging.Logger,
     state_file: Path | None = None,
+    on_message_sent=None,
 ) -> tuple[bool, dict]:
     """
     Send a window.postMessage to the extension's content script
@@ -382,6 +383,25 @@ async def trigger_extension_sniper_consular_only(
     }""", {"config": config, "bookedOfcDate": bookedOfcDate})
 
     log.info("📨 Consular-Only message sent to extension. Waiting for result (up to 600s) …")
+
+    # Optional callback used only by Consular Scout detector-first flow.
+    #
+    # At this exact point EXECUTE_SNIPER_CONSULAR_ONLY has already
+    # been posted to the detector's extension, so the remaining
+    # waitingForConsular accounts may now receive the same Scout hit.
+    #
+    # Both normal post-OFC and RESCHEDULE_FULL post-OFC flows use
+    # this same executor, so this works for both.
+    if on_message_sent is not None:
+        try:
+            await on_message_sent()
+        except Exception as callback_error:
+            # Broadcast bookkeeping must NEVER interfere with
+            # the detector's own Consular booking attempt.
+            log.warning(
+                f"[CONSULAR-SCOUT] Could not release detector-first "
+                f"fleet broadcast: {callback_error}"
+            )
 
     deadline = time.time() + 600
     while time.time() < deadline:
@@ -504,3 +524,302 @@ async def trigger_extension_sniper_consular_only(
         window.__consularOnlyResult = null;
     """)
     return False, {}
+async def trigger_extension_consular_scout(
+    page: Page,
+    scout_config: dict,
+    log: logging.Logger,
+) -> dict:
+    """
+    Perform ONE read-only Consular Dates Scout request through
+    the extension.
+
+    This function NEVER books anything.
+
+    Expected extension result:
+
+        success:
+        {
+            "status": "success",
+            "city": "...",
+            "dates": [...]
+        }
+
+        session expiry:
+        {
+            "status": "error",
+            "sessionExpired": true,
+            ...
+        }
+
+        rate limit:
+        {
+            "status": "error",
+            "rateLimited": true,
+            ...
+        }
+
+    booking_runner.py decides what to do with the result while
+    preserving the existing temporary OFC hold.
+    """
+
+    customer_name = str(
+        scout_config.get(
+            "customer_name",
+            "unknown",
+        )
+    )
+
+    city = normalize_city(
+        str(
+            scout_config.get(
+                "city",
+                "",
+            )
+        )
+    )
+
+    config = {
+        "city": city,
+        "consularStartDate": scout_config.get(
+            "consularStartDate",
+            "",
+        ),
+        "consularEndDate": scout_config.get(
+            "consularEndDate",
+            "",
+        ),
+        "bookedOfcDate": scout_config.get(
+            "bookedOfcDate",
+            "",
+        ),
+        "isReschedule": bool(
+            scout_config.get(
+                "isReschedule",
+                False,
+            )
+        ),
+    }
+
+    log.info(
+        f"[CONSULAR-SCOUT] 🔎 Sending read-only "
+        f"Consular Dates probe for '{customer_name}' "
+        f"| {city}"
+    )
+
+    await page.evaluate(
+        """
+        window.__consularScoutResult = null;
+
+        if (window.__consularScoutResultListener) {
+            window.removeEventListener(
+                'message',
+                window.__consularScoutResultListener
+            );
+        }
+
+        window.__consularScoutResultListener = function(event) {
+            if (
+                event.source !== window
+                || !event.data
+            ) {
+                return;
+            }
+
+            if (
+                event.data.action === 'CONSULAR_SCOUT_RESULT'
+            ) {
+                window.__consularScoutResult = event.data;
+
+                window.removeEventListener(
+                    'message',
+                    window.__consularScoutResultListener
+                );
+            }
+        };
+
+        window.addEventListener(
+            'message',
+            window.__consularScoutResultListener
+        );
+        """
+    )
+
+    try:
+        await page.evaluate(
+            """(config) => {
+                window.postMessage({
+                    action: 'EXECUTE_CONSULAR_SCOUT_DATES',
+                    config: config
+                }, '*');
+            }""",
+            config,
+        )
+
+        log.info(
+            f"[CONSULAR-SCOUT] 📨 "
+            f"Read-only Consular Dates probe sent "
+            f"for {city}."
+        )
+
+        # Scout is intentionally short-lived.
+        # The normal Consular booking executor still has its
+        # existing 600-second allowance.
+        deadline = time.time() + 30
+
+        while time.time() < deadline:
+            if await check_for_page_limit(
+                page,
+                customer_name,
+                log,
+            ):
+                return {
+                    "success": False,
+                    "city": city,
+                    "pageLimit": True,
+                }
+
+            try:
+                result = await page.evaluate(
+                    "window.__consularScoutResult"
+                )
+
+            except Exception as error:
+                error_text = str(error)
+
+                if (
+                    "Execution context was destroyed"
+                    in error_text
+                ):
+                    log.warning(
+                        f"[CONSULAR-SCOUT] Navigation occurred "
+                        f"during Scout probe for {customer_name}."
+                    )
+
+                    return {
+                        "success": False,
+                        "city": city,
+                        "sessionExpired": True,
+                    }
+
+                raise
+
+            if result is not None:
+                status = str(
+                    result.get(
+                        "status",
+                        "error",
+                    )
+                ).lower()
+
+                message = str(
+                    result.get(
+                        "msg",
+                        "",
+                    )
+                    or ""
+                )
+
+                session_expired = bool(
+                    result.get(
+                        "sessionExpired",
+                        False,
+                    )
+                )
+
+                rate_limited = bool(
+                    result.get(
+                        "rateLimited",
+                        False,
+                    )
+                )
+
+                # Defensive fallback in case the extension
+                # reports the condition only in its message.
+                if (
+                    "session expired"
+                    in message.lower()
+                ):
+                    session_expired = True
+
+                if (
+                    "429" in message
+                    or "too many requests"
+                    in message.lower()
+                ):
+                    rate_limited = True
+
+                if status == "success":
+                    dates = (
+                        result.get("dates")
+                        or []
+                    )
+
+                    log.info(
+                        f"[CONSULAR-SCOUT] ✅ "
+                        f"{city} returned "
+                        f"{len(dates)} date(s)."
+                    )
+
+                    return {
+                        "success": True,
+                        "city": normalize_city(
+                            str(
+                                result.get(
+                                    "city",
+                                    city,
+                                )
+                            )
+                        ),
+                        "dates": dates,
+                        "sessionExpired": False,
+                        "rateLimited": False,
+                    }
+
+                log.warning(
+                    f"[CONSULAR-SCOUT] Probe failed for "
+                    f"{customer_name} | {city}: "
+                    f"{message or 'unknown error'}"
+                )
+
+                return {
+                    "success": False,
+                    "city": city,
+                    "dates": [],
+                    "sessionExpired": session_expired,
+                    "rateLimited": rate_limited,
+                    "msg": message,
+                }
+
+            await asyncio.sleep(0.05)
+
+        log.warning(
+            f"[CONSULAR-SCOUT] ⏱️ "
+            f"Timed out waiting for {city} Scout result."
+        )
+
+        return {
+            "success": False,
+            "city": city,
+            "dates": [],
+            "timedOut": True,
+        }
+
+    finally:
+        # Important when booking/CVS pre-empts Scout:
+        # never leave a stale listener behind.
+        try:
+            await page.evaluate(
+                """
+                if (window.__consularScoutResultListener) {
+                    window.removeEventListener(
+                        'message',
+                        window.__consularScoutResultListener
+                    );
+                }
+
+                window.__consularScoutResultListener = null;
+                window.__consularScoutResult = null;
+                """
+            )
+        except Exception:
+            pass

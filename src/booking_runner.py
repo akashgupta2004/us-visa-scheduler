@@ -3665,7 +3665,7 @@ async def run(cdp_port: int, customer: str, username: str):
                             random.randint(100, 800),
                             random.randint(100, 600),
                         )
-                        # 2. Check for silent expiry where URL didn't change
+                        # 2. Check for silent expiry where URL didn't changee
                         body_text = (await page.inner_text("body")).lower()
                         matched_phrase = next((phrase for phrase in [
                             "session has expired", "please sign in", "sign in to continue", "unauthorized"

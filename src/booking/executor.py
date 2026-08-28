@@ -335,11 +335,66 @@ async def trigger_extension_sniper_consular_only(
     config = {
         "isReschedule": trigger.get("action_type") == "RESCHEDULE_FULL_CONSULAR_ONLY",
         "consularCities": consularCities,
-        "consularPriorityCity": normalize_city(trigger.get("consularPriorityCity", consularCities[0] if consularCities else "")),
-        "consularStartDate": trigger.get("consularStartDate", ""),
-        "consularEndDate": trigger.get("consularEndDate", ""),
-        "preventImmediateBooking": trigger.get("prevent_immediate", False),
-        "multiPerson": trigger.get("multiPerson", False),
+        "consularPriorityCity": normalize_city(
+            trigger.get(
+                "consularPriorityCity",
+                consularCities[0] if consularCities else "",
+            )
+        ),
+        "consularStartDate": trigger.get(
+            "consularStartDate",
+            "",
+        ),
+        "consularEndDate": trigger.get(
+            "consularEndDate",
+            "",
+        ),
+        "preventImmediateBooking": trigger.get(
+            "prevent_immediate",
+            False,
+        ),
+        "multiPerson": trigger.get(
+            "multiPerson",
+            False,
+        ),
+
+        # Consular Scout detector-only fast-path.
+        # These fields are empty for CVS/fleet/normal Consular
+        # triggers, so their existing flow remains unchanged.
+        "scoutConsularToken": trigger.get(
+            "scoutConsularToken",
+            "",
+        ),
+        "scoutConsularPrimaryId": trigger.get(
+            "scoutConsularPrimaryId",
+            "",
+        ),
+        "scoutConsularAppd": trigger.get(
+            "scoutConsularAppd",
+            "",
+        ),
+        "scoutConsularApplications": trigger.get(
+            "scoutConsularApplications",
+            [],
+        ),
+        "scoutConsularTokenCity": normalize_city(
+            trigger.get(
+                "scoutConsularTokenCity",
+                "",
+            )
+        ),
+        "scoutConsularTokenDate": trigger.get(
+            "scoutConsularTokenDate",
+            "",
+        ),
+        "scoutConsularTokenIsReschedule": trigger.get(
+            "scoutConsularTokenIsReschedule",
+            False,
+        ),
+        "scoutConsularTokenCapturedAt": trigger.get(
+            "scoutConsularTokenCapturedAt",
+            0,
+        ),
     }
 
     log.info(f"🎯 Triggering Consular-Only Sniper for '{customerName}'")
@@ -541,7 +596,13 @@ async def trigger_extension_consular_scout(
         {
             "status": "success",
             "city": "...",
-            "dates": [...]
+            "dates": [...],
+            "token": "...",
+            "primaryId": "...",
+            "appd": "...",
+            "applications": [...],
+            "isReschedule": false,
+            "capturedAt": 0
         }
 
         session expiry:
@@ -595,6 +656,12 @@ async def trigger_extension_consular_scout(
         "isReschedule": bool(
             scout_config.get(
                 "isReschedule",
+                False,
+            )
+        ),
+        "multiPerson": bool(
+            scout_config.get(
+                "multiPerson",
                 False,
             )
         ),
@@ -771,6 +838,51 @@ async def trigger_extension_consular_scout(
                             )
                         ),
                         "dates": dates,
+
+                        # Exact token/context produced by THIS
+                        # account's Consular Dates Scout call.
+                        "token": str(
+                            result.get(
+                                "token",
+                                "",
+                            )
+                            or ""
+                        ),
+                        "primaryId": str(
+                            result.get(
+                                "primaryId",
+                                "",
+                            )
+                            or ""
+                        ),
+                        "appd": str(
+                            result.get(
+                                "appd",
+                                "",
+                            )
+                            or ""
+                        ),
+                        "applications": (
+                            result.get(
+                                "applications",
+                                [],
+                            )
+                            or []
+                        ),
+                        "isReschedule": bool(
+                            result.get(
+                                "isReschedule",
+                                config["isReschedule"],
+                            )
+                        ),
+                        "capturedAt": int(
+                            result.get(
+                                "capturedAt",
+                                0,
+                            )
+                            or 0
+                        ),
+
                         "sessionExpired": False,
                         "rateLimited": False,
                     }

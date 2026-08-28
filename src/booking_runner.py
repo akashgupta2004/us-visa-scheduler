@@ -927,6 +927,7 @@ async def _broadcast_consular_scout_hit(
     window_id: str,
     only_username: str = "",
     exclude_username: str = "",
+    scout_fastpath=None,
 ):
     """
     Send a detected Consular opportunity to every eligible
@@ -1123,7 +1124,69 @@ async def _broadcast_consular_scout_hit(
                 )
             ),
         }
+        # Consular Scout token fast-path is ONLY for the
+        # detector account that made this exact Dates request.
+        #
+        # Fleet accounts must perform their own normal
+        # Consular Dates request and must never reuse another
+        # account's token.
+        if only_username and scout_fastpath:
+            scout_token = str(
+                scout_fastpath.get(
+                    "token",
+                    "",
+                )
+                or ""
+            ).strip()
 
+            if scout_token:
+                trigger_updates.update(
+                    {
+                        "scoutConsularToken": (
+                            scout_token
+                        ),
+                        "scoutConsularPrimaryId": str(
+                            scout_fastpath.get(
+                                "primaryId",
+                                "",
+                            )
+                            or ""
+                        ).strip(),
+                        "scoutConsularAppd": str(
+                            scout_fastpath.get(
+                                "appd",
+                                "",
+                            )
+                            or ""
+                        ).strip(),
+                        "scoutConsularApplications": (
+                            scout_fastpath.get(
+                                "applications",
+                                [],
+                            )
+                            or []
+                        ),
+                        "scoutConsularTokenCity": (
+                            matched_city
+                        ),
+                        "scoutConsularTokenDate": (
+                            matched_date
+                        ),
+                        "scoutConsularTokenIsReschedule": bool(
+                            scout_fastpath.get(
+                                "isReschedule",
+                                False,
+                            )
+                        ),
+                        "scoutConsularTokenCapturedAt": int(
+                            scout_fastpath.get(
+                                "capturedAt",
+                                0,
+                            )
+                            or 0
+                        ),
+                    }
+                )
         queued, reason = (
             try_queue_local_trigger(
                 acct_state_file,
@@ -1316,6 +1379,12 @@ async def _try_pre_consular_scout(
         ),
         "isReschedule": (
             is_reschedule
+        ),
+        "multiPerson": bool(
+            my_config.get(
+                "multiPerson",
+                False,
+            )
         ),
     }
 
@@ -1557,7 +1626,40 @@ async def _try_pre_consular_scout(
 
     # =========================================================
     # DETECTOR FIRST
+    #
+    # Preserve the exact Consular Dates token/context returned
+    # by this detector's Scout request. Only this account gets
+    # the fast-path. The wider fleet continues normally.
     # =========================================================
+    consular_scout_fastpath = {
+        "token": str(
+            result.get("token")
+            or ""
+        ).strip(),
+        "primaryId": str(
+            result.get("primaryId")
+            or ""
+        ).strip(),
+        "appd": str(
+            result.get("appd")
+            or ""
+        ).strip(),
+        "applications": (
+            result.get("applications")
+            or []
+        ),
+        "isReschedule": bool(
+            result.get(
+                "isReschedule",
+                is_reschedule,
+            )
+        ),
+        "capturedAt": int(
+            result.get("capturedAt")
+            or int(time.time() * 1000)
+        ),
+    }
+
     detector_count = (
         await _broadcast_consular_scout_hit(
             result_city,
@@ -1565,6 +1667,9 @@ async def _try_pre_consular_scout(
             customer,
             window_id,
             only_username=username,
+            scout_fastpath=(
+                consular_scout_fastpath
+            ),
         )
     )
 
@@ -2985,19 +3090,33 @@ async def run(cdp_port: int, customer: str, username: str):
                         "scoutOfcTokenDate",
                         "scoutOfcTokenIsReschedule",
                         "scoutOfcTokenCapturedAt",
+                        "scoutConsularToken",
+                        "scoutConsularPrimaryId",
+                        "scoutConsularAppd",
+                        "scoutConsularApplications",
+                        "scoutConsularTokenCity",
+                        "scoutConsularTokenDate",
+                        "scoutConsularTokenIsReschedule",
+                        "scoutConsularTokenCapturedAt",
                     ] if k in state}
 
 # One-shot token: remove it from persistent state immediately.
-                    if trigger.get("scoutOfcToken"):
+                    # Consular Scout token is also one-shot.
+                    # Once copied into this local trigger object,
+                    # remove it from persistent state so a future
+                    # CVS/Scout trigger can never reuse a stale token.
+                    if trigger.get("scoutConsularToken"):
                         _update_state(
                             state_file,
                             {
-                                "scoutOfcToken": "",
-                                "scoutOfcAppd": "",
-                                "scoutOfcTokenCity": "",
-                                "scoutOfcTokenDate": "",
-                                "scoutOfcTokenIsReschedule": False,
-                                "scoutOfcTokenCapturedAt": 0,
+                                "scoutConsularToken": "",
+                                "scoutConsularPrimaryId": "",
+                                "scoutConsularAppd": "",
+                                "scoutConsularApplications": [],
+                                "scoutConsularTokenCity": "",
+                                "scoutConsularTokenDate": "",
+                                "scoutConsularTokenIsReschedule": False,
+                                "scoutConsularTokenCapturedAt": 0,
                             },
                         )
                     # ── Re-navigate if needed ──────────────────────────────────

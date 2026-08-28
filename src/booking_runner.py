@@ -74,6 +74,8 @@ from src.common.scout_state import (
     claim_scout_hit,
     get_due_consular_scout_window,
     claim_consular_scout_hit,
+    CONSULAR_SCOUT_STARTS,
+    CONSULAR_SCOUT_CYCLES,
 )
 
 load_dotenv()
@@ -621,7 +623,12 @@ def _get_consular_scout_assigned_city(
     """
     Assign ONE Consular city per account per Scout cycle.
 
-    Cycle 2 rotates by one city, reducing Consular API pressure.
+    Rotate across BOTH:
+      - Scout anchor windows
+      - cycle 1 / cycle 2
+
+    This prevents the same account from repeatedly checking only
+    the same two cities throughout its temporary OFC hold.
     """
     cities, _, _ = (
         _get_consular_scout_criteria(
@@ -650,8 +657,45 @@ def _get_consular_scout_assigned_city(
         0,
     )
 
+    # Example window:
+    # consular-20260828-112555-c1
+    #
+    # Extract 112555 -> minute=25, second=55,
+    # then determine which configured Scout anchor this is.
+    anchor_offset = 0
+
+    try:
+        anchor_hhmmss = (
+            str(window_id)
+            .rsplit("-c", 1)[0]
+            .rsplit("-", 1)[-1]
+        )
+
+        anchor_minute = int(anchor_hhmmss[2:4])
+        anchor_second = int(anchor_hhmmss[4:6])
+
+        anchor_offset = list(
+            CONSULAR_SCOUT_STARTS
+        ).index(
+            (
+                anchor_minute,
+                anchor_second,
+            )
+        )
+
+    except (
+        ValueError,
+        TypeError,
+        IndexError,
+    ):
+        anchor_offset = 0
+
     city_index = (
         account_position
+        + (
+            anchor_offset
+            * CONSULAR_SCOUT_CYCLES
+        )
         + cycle_offset
     ) % len(cities)
 

@@ -3612,8 +3612,44 @@ async def run(cdp_port: int, customer: str, username: str):
                         expired_flag = await page.evaluate("window._extensionSessionExpired || false")
                         if expired_flag:
                             if is_waiting:
-                                log.warning("Extension heartbeat detected session expiry in WAIT MODE, ignoring as per preference.")
-                                await page.evaluate("window._extensionSessionExpired = false")
+                                print("")  # visual break
+                                log.warning(
+                                    "🚨 Extension heartbeat detected session expiry in WAIT MODE. "
+                                    "Preserving temporary OFC hold and triggering recovery..."
+                                )
+
+                                # Clear only the extension's one-shot expiry signal.
+                                # DO NOT clear:
+                                #   waitingForConsular
+                                #   bookedOfcDate
+                                #   waitStartTime
+                                await page.evaluate(
+                                    "window._extensionSessionExpired = false"
+                                )
+
+                                success = await recover_session(
+                                    page,
+                                    customer,
+                                    username,
+                                )
+
+                                if not success:
+                                    log.error(
+                                        "Recovery failed during Consular WAIT MODE. "
+                                        "Temporary OFC hold state remains preserved. "
+                                        "Exiting to trigger orchestrator restart..."
+                                    )
+                                    sys.exit(1)
+
+                                log.info(
+                                    "✅ Session recovered during Consular WAIT MODE. "
+                                    "Temporary OFC hold preserved; account remains ready "
+                                    "for Scout/CVS Consular triggers."
+                                )
+
+                                last_keep_alive = time.time()
+                                continue
+
                             else:
                                 print("") # visual break
                                 log.warning("🚨 Extension heartbeat detected session expiry! Triggering recovery...")

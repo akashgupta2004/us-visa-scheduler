@@ -91,6 +91,9 @@ CONSULAR_SCOUT_HOLD_SECONDS = 50 * 60
 # It only suppresses additional Scout probes briefly.
 CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS = 90
 
+# Match the existing OFC Scout city-to-city pacing.
+CONSULAR_SCOUT_CITY_GAP_SECONDS = 1.5
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [BOOKING_RUNNER] %(message)s",
@@ -700,7 +703,48 @@ def _get_consular_scout_assigned_city(
     ) % len(cities)
 
     return cities[city_index]
+def _get_consular_scout_city_order(
+    config: dict,
+    booked_ofc_date: str,
+    account_position: int,
+    window_id: str,
+) -> list[str]:
+    """
+    Sweep all effective Consular cities during this account's Scout turn.
 
+    Preserve the existing distributed city assignment as the
+    STARTING city so different accounts do not all hit the same
+    city at the same instant.
+
+    Fallback accounts will sweep all five cities.
+    Normal accounts will sweep only their configured Consular cities.
+    """
+    cities, _, _ = (
+        _get_consular_scout_criteria(
+            config,
+            booked_ofc_date,
+        )
+    )
+
+    if not cities:
+        return []
+
+    first_city = _get_consular_scout_assigned_city(
+        config,
+        booked_ofc_date,
+        account_position,
+        window_id,
+    )
+
+    if first_city not in cities:
+        return cities
+
+    start_index = cities.index(first_city)
+
+    return (
+        cities[start_index:]
+        + cities[:start_index]
+    )
 
 def _match_consular_scout_dates(
     city: str,
@@ -1282,7 +1326,7 @@ async def _try_pre_consular_scout(
     last_window_id: str,
 ) -> str:
     """
-    Perform ONE assigned official Consular Dates Scout check.
+    Perform a rapid multi-city official Consular Dates Scout sweep.
 
     Only runs during a valid temporary OFC hold.
 
@@ -1291,6 +1335,12 @@ async def _try_pre_consular_scout(
         - NEVER clears bookedOfcDate
         - NEVER clears waitStartTime
         - NEVER enters normal booking rest
+
+    Each scheduled account starts from its existing assigned city,
+    then sweeps the remaining effective Consular cities with the
+    same 1.5-second city gap used by OFC Scout.
+
+    CVS / real booking triggers always pre-empt Scout immediately.
     """
 
     due = get_due_consular_scout_window(
@@ -1305,8 +1355,13 @@ async def _try_pre_consular_scout(
     window_id = due["window_id"]
 
     # Mark immediately so this runner cannot perform
-    # the same assigned Scout twice.
+    # the same scheduled Scout turn twice.
     last_window_id = window_id
+
+    live_state_file = (
+        Path(__file__).parent
+        / f"state_{safe_id(username)}.json"
+    )
 
     # Scout must operate ONLY during the existing OFC hold.
     if not _consular_scout_hold_is_active(
@@ -1321,7 +1376,7 @@ async def _try_pre_consular_scout(
     ):
         log.info(
             f"[CONSULAR-SCOUT] ⏭️ "
-            f"{customer} busy; assigned Scout skipped."
+            f"{customer} busy; Scout sweep skipped."
         )
         return last_window_id
 
@@ -1368,8 +1423,8 @@ async def _try_pre_consular_scout(
         or ""
     )
 
-    assigned_city = (
-        _get_consular_scout_assigned_city(
+    scout_cities = (
+        _get_consular_scout_city_order(
             my_config,
             booked_ofc_date,
             account_position,
@@ -1377,7 +1432,7 @@ async def _try_pre_consular_scout(
         )
     )
 
-    if not assigned_city:
+    if not scout_cities:
         return last_window_id
 
     (
@@ -1402,367 +1457,471 @@ async def _try_pre_consular_scout(
 
     log.info(
         f"[CONSULAR-SCOUT] 🔎 "
-        f"{customer} polling official Consular API "
-        f"for {assigned_city} "
+        f"{customer} starting rapid Consular Scout sweep "
+        f"{scout_cities} "
         f"(position {account_position + 1}/"
         f"{account_count}, window {window_id}, IST, "
         f"reschedule={is_reschedule})."
     )
 
-    scout_config = {
-        "customer_name": customer,
-        "city": assigned_city,
-        "consularStartDate": (
-            effective_start
-        ),
-        "consularEndDate": (
-            effective_end
-        ),
-        "bookedOfcDate": (
-            booked_ofc_date
-        ),
-        "isReschedule": (
-            is_reschedule
-        ),
-        "multiPerson": bool(
-            my_config.get(
-                "multiPerson",
-                False,
-            )
-        ),
-    }
-
-    try:
-        scout_task = asyncio.create_task(
-            trigger_extension_consular_scout(
-                page,
-                scout_config,
-                log,
-            )
-        )
-
-        live_state_file = (
-            Path(__file__).parent
-            / f"state_{safe_id(username)}.json"
-        )
-
-        while not scout_task.done():
-            live_state = _read_state(
-                live_state_file
-            )
-
-            # CVS or any real booking trigger ALWAYS wins.
-            if live_state.get("pending"):
-                scout_task.cancel()
-
-                try:
-                    await scout_task
-                except asyncio.CancelledError:
-                    pass
-
-                log.info(
-                    f"[CONSULAR-SCOUT] ⚡ "
-                    f"Booking trigger arrived while "
-                    f"{customer} was scouting. "
-                    "Scout pre-empted immediately."
-                )
-
-                return last_window_id
-
-            # Hold may expire while request is running.
-            if not _consular_scout_hold_is_active(
-                live_state
-            ):
-                scout_task.cancel()
-
-                try:
-                    await scout_task
-                except asyncio.CancelledError:
-                    pass
-
-                log.info(
-                    f"[CONSULAR-SCOUT] ⏭️ "
-                    f"OFC hold ended while "
-                    f"{customer} was scouting."
-                )
-
-                return last_window_id
-
-            await asyncio.sleep(
-                POLL_INTERVAL
-            )
-
-        result = await scout_task
-
-    except asyncio.CancelledError:
-        raise
-
-    except Exception as exc:
-        log.warning(
-            f"[CONSULAR-SCOUT] "
-            f"Scout request failed for "
-            f"{customer}: {exc}"
-        )
-
-        return last_window_id
-
-    result = result or {}
-
-    # ---------------------------------------------------------
-    # SCOUT-ONLY 429
-    #
-    # NEVER enter booking rest.
-    # NEVER change OFC hold state.
-    # CVS remains fully actionable.
-    # ---------------------------------------------------------
-    if result.get("rateLimited"):
-        backoff_until = (
-            time.time()
-            + CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS
-        )
-
-        _update_state(
-            live_state_file,
-            {
-                "consularScoutBackoffUntil": (
-                    backoff_until
-                ),
-                "consularScoutLast429At": (
-                    time.time()
-                ),
-            },
-        )
-
-        log.warning(
-            f"[CONSULAR-SCOUT] ⚠️ "
-            f"429/rate limit for {customer}. "
-            f"Scout-only backoff for "
-            f"{CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS}s. "
-            "Temporary OFC hold and CVS eligibility "
-            "remain untouched."
-        )
-
-        return last_window_id
-
-    # ---------------------------------------------------------
-    # SCOUT SESSION EXPIRY
-    #
-    # Preserve OFC state first, then use the EXISTING recovery.
-    #
-    # Because the :25:55 and :55:55 passes happen before the
-    # stronger :30/:00 release points, an early failed Scout can
-    # also act as a session preflight.
-    # ---------------------------------------------------------
-    if result.get("sessionExpired"):
-        log.warning(
-            f"[CONSULAR-SCOUT] ⚠️ "
-            f"Session expired for {customer}. "
-            "Preserving temporary OFC hold and "
-            "attempting in-place recovery."
-        )
-
-        recovered = await recover_session(
-            page,
-            customer,
-            username,
-        )
-
-        # ABSOLUTELY DO NOT clear:
+    for city_index, assigned_city in enumerate(
+        scout_cities
+    ):
+        # -----------------------------------------------------
+        # BEFORE EACH CITY
         #
-        # waitingForConsular
-        # bookedOfcDate
-        # waitStartTime
-        #
-        _update_state(
-            live_state_file,
-            {
-                "pending": False,
-                "extension_running": False,
-                "consularScoutLastSessionExpiryAt": (
-                    time.time()
-                ),
-            },
+        # CVS / booking always wins and OFC hold must still
+        # be active.
+        # -----------------------------------------------------
+        live_state = _read_state(
+            live_state_file
         )
 
-        if recovered:
+        if live_state.get("pending"):
             log.info(
-                f"[CONSULAR-SCOUT] ✅ "
-                f"Session recovered for {customer}. "
-                "OFC hold preserved; account remains "
-                "eligible for later Scout/CVS triggers."
+                f"[CONSULAR-SCOUT] ⚡ "
+                f"Booking trigger arrived before "
+                f"{customer} could Scout {assigned_city}. "
+                "Scout sweep pre-empted immediately."
             )
-        else:
-            log.error(
-                f"[CONSULAR-SCOUT] ⚠️ "
-                f"Session recovery failed for {customer}. "
-                "Temporary OFC hold state remains preserved. "
-                "Restarting the runner so the browser session "
-                "can be restored cleanly."
+            return last_window_id
+
+        if not _consular_scout_hold_is_active(
+            live_state
+        ):
+            log.info(
+                f"[CONSULAR-SCOUT] ⏭️ "
+                f"OFC hold ended during "
+                f"{customer}'s Scout sweep."
+            )
+            return last_window_id
+
+        log.info(
+            f"[CONSULAR-SCOUT] 🔎 "
+            f"{customer} polling official Consular API "
+            f"for {assigned_city} "
+            f"({city_index + 1}/{len(scout_cities)}, "
+            f"position {account_position + 1}/"
+            f"{account_count}, window {window_id}, IST, "
+            f"reschedule={is_reschedule})."
+        )
+
+        scout_config = {
+            "customer_name": customer,
+            "city": assigned_city,
+            "consularStartDate": (
+                effective_start
+            ),
+            "consularEndDate": (
+                effective_end
+            ),
+            "bookedOfcDate": (
+                booked_ofc_date
+            ),
+            "isReschedule": (
+                is_reschedule
+            ),
+            "multiPerson": bool(
+                my_config.get(
+                    "multiPerson",
+                    False,
+                )
+            ),
+        }
+
+        try:
+            scout_task = asyncio.create_task(
+                trigger_extension_consular_scout(
+                    page,
+                    scout_config,
+                    log,
+                )
             )
 
-            # Runner startup intentionally does NOT clear:
+            while not scout_task.done():
+                live_state = _read_state(
+                    live_state_file
+                )
+
+                # CVS or any real booking trigger ALWAYS wins.
+                if live_state.get("pending"):
+                    scout_task.cancel()
+
+                    try:
+                        await scout_task
+                    except asyncio.CancelledError:
+                        pass
+
+                    log.info(
+                        f"[CONSULAR-SCOUT] ⚡ "
+                        f"Booking trigger arrived while "
+                        f"{customer} was scouting. "
+                        "Scout pre-empted immediately."
+                    )
+
+                    return last_window_id
+
+                # Hold may expire while request is running.
+                if not _consular_scout_hold_is_active(
+                    live_state
+                ):
+                    scout_task.cancel()
+
+                    try:
+                        await scout_task
+                    except asyncio.CancelledError:
+                        pass
+
+                    log.info(
+                        f"[CONSULAR-SCOUT] ⏭️ "
+                        f"OFC hold ended while "
+                        f"{customer} was scouting."
+                    )
+
+                    return last_window_id
+
+                await asyncio.sleep(
+                    POLL_INTERVAL
+                )
+
+            result = await scout_task
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            log.warning(
+                f"[CONSULAR-SCOUT] "
+                f"Scout request failed for "
+                f"{customer} | {assigned_city}: {exc}"
+            )
+
+            result = {}
+
+        result = result or {}
+
+        # -----------------------------------------------------
+        # SCOUT-ONLY 429
+        #
+        # Stop this account's entire sweep.
+        # Do not enter booking rest.
+        # OFC hold and CVS remain untouched.
+        # -----------------------------------------------------
+        if result.get("rateLimited"):
+            backoff_until = (
+                time.time()
+                + CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS
+            )
+
+            _update_state(
+                live_state_file,
+                {
+                    "consularScoutBackoffUntil": (
+                        backoff_until
+                    ),
+                    "consularScoutLast429At": (
+                        time.time()
+                    ),
+                },
+            )
+
+            log.warning(
+                f"[CONSULAR-SCOUT] ⚠️ "
+                f"429/rate limit for {customer}. "
+                f"Scout-only backoff for "
+                f"{CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS}s. "
+                "Temporary OFC hold and CVS eligibility "
+                "remain untouched."
+            )
+
+            return last_window_id
+
+        # -----------------------------------------------------
+        # SCOUT SESSION EXPIRY
+        #
+        # Recover immediately.
+        # Preserve OFC hold.
+        # After successful recovery, continue with the NEXT city.
+        # -----------------------------------------------------
+        if result.get("sessionExpired"):
+            log.warning(
+                f"[CONSULAR-SCOUT] ⚠️ "
+                f"Session expired for {customer}. "
+                "Preserving temporary OFC hold and "
+                "attempting in-place recovery."
+            )
+
+            recovered = await recover_session(
+                page,
+                customer,
+                username,
+            )
+
+            # ABSOLUTELY DO NOT clear:
             #
             # waitingForConsular
             # bookedOfcDate
             # waitStartTime
             #
-            # Therefore restarting here is safe for the OFC hold.
-            sys.exit(1)
-
-        return last_window_id
-
-    if not result.get("success"):
-        log.info(
-            f"[CONSULAR-SCOUT] "
-            f"No usable Scout result for {customer}."
-        )
-        return last_window_id
-
-    result_city = (
-        _normalize_consular_scout_city(
-            result.get("city")
-            or assigned_city
-        )
-    )
-
-    dates = result.get("dates") or []
-
-    matched, matched_date = (
-        _match_consular_scout_dates(
-            result_city,
-            dates,
-            my_config,
-            booked_ofc_date,
-        )
-    )
-
-    if not matched:
-        log.info(
-            f"[CONSULAR-SCOUT] "
-            f"No qualifying Consular date found by "
-            f"{customer} in {result_city}."
-        )
-        return last_window_id
-
-    claimed, reason = (
-        claim_consular_scout_hit(
-            window_id,
-            result_city,
-            matched_date,
-            customer,
-        )
-    )
-
-    if not claimed:
-        log.info(
-            f"[CONSULAR-SCOUT] "
-            f"Hit ignored: {reason} "
-            f"({result_city} {matched_date})."
-        )
-        return last_window_id
-
-    log.warning(
-        f"[CONSULAR-SCOUT] 🎯 HIT: "
-        f"{customer} found "
-        f"{result_city} {matched_date}. "
-        "Detector booking gets first priority."
-    )
-
-    # =========================================================
-    # DETECTOR FIRST
-    #
-    # Preserve the exact Consular Dates token/context returned
-    # by this detector's Scout request. Only this account gets
-    # the fast-path. The wider fleet continues normally.
-    # =========================================================
-    consular_scout_fastpath = {
-        "token": str(
-            result.get("token")
-            or ""
-        ).strip(),
-        "primaryId": str(
-            result.get("primaryId")
-            or ""
-        ).strip(),
-        "appd": str(
-            result.get("appd")
-            or ""
-        ).strip(),
-        "applications": (
-            result.get("applications")
-            or []
-        ),
-        "isReschedule": bool(
-            result.get(
-                "isReschedule",
-                is_reschedule,
+            _update_state(
+                live_state_file,
+                {
+                    "pending": False,
+                    "extension_running": False,
+                    "consularScoutLastSessionExpiryAt": (
+                        time.time()
+                    ),
+                },
             )
-        ),
-        "capturedAt": int(
-            result.get("capturedAt")
-            or int(time.time() * 1000)
-        ),
-    }
 
-    detector_count = (
-        await _broadcast_consular_scout_hit(
-            result_city,
-            matched_date,
-            customer,
-            window_id,
-            only_username=username,
-            scout_fastpath=(
-                consular_scout_fastpath
-            ),
-        )
-    )
+            if not recovered:
+                log.warning(
+                    f"[CONSULAR-SCOUT] ⚠️ "
+                    f"Session recovery failed for {customer}. "
+                    "OFC hold state is still preserved."
+                )
 
-    if detector_count > 0:
-        _update_state(
-            state_file,
-            {
-                "consular_scout_detector_broadcast_pending": True,
-                "consular_scout_detector_city": (
-                    result_city
-                ),
-                "consular_scout_detector_date": (
-                    matched_date
-                ),
-                "consular_scout_detector_window_id": (
-                    window_id
-                ),
-                "consular_scout_detector_customer": (
-                    customer
-                ),
-            },
-        )
+                return last_window_id
 
-        log.warning(
-            f"[CONSULAR-SCOUT] 🚀 DETECTOR FIRST: "
-            f"{customer} queued for "
-            f"{result_city} {matched_date}. "
-            "Fleet will release only after the "
-            "detector's Consular booking message "
-            "is sent to its extension."
-        )
+            log.info(
+                f"[CONSULAR-SCOUT] ✅ "
+                f"Session recovered for {customer}. "
+                "OFC hold preserved; resuming Scout sweep."
+            )
 
-    else:
-        # Never lose a release because detector became
-        # unavailable between detection and queuing.
-        log.warning(
-            f"[CONSULAR-SCOUT] ⚠️ "
-            f"Detector {customer} could not be queued. "
-            "Broadcasting immediately to other "
-            "eligible WAIT MODE accounts."
-        )
+            live_state = _read_state(
+                live_state_file
+            )
 
-        await _broadcast_consular_scout_hit(
-            result_city,
-            matched_date,
-            customer,
-            window_id,
-            exclude_username=username,
-        )
+            if live_state.get("pending"):
+                return last_window_id
+
+            if not _consular_scout_hold_is_active(
+                live_state
+            ):
+                return last_window_id
+
+            # Session recovered successfully.
+            # Continue directly to the next city.
+            continue
+
+        # -----------------------------------------------------
+        # 500 / 524 / Access Denied / other non-usable result
+        #
+        # Do NOT kill the whole sweep.
+        # Continue to another city.
+        # -----------------------------------------------------
+        if not result.get("success"):
+            log.info(
+                f"[CONSULAR-SCOUT] "
+                f"No usable Scout result for "
+                f"{customer} in {assigned_city}. "
+                "Continuing Scout sweep."
+            )
+
+        else:
+            result_city = (
+                _normalize_consular_scout_city(
+                    result.get("city")
+                    or assigned_city
+                )
+            )
+
+            dates = result.get("dates") or []
+
+            matched, matched_date = (
+                _match_consular_scout_dates(
+                    result_city,
+                    dates,
+                    my_config,
+                    booked_ofc_date,
+                )
+            )
+
+            if not matched:
+                log.info(
+                    f"[CONSULAR-SCOUT] "
+                    f"No qualifying Consular date found by "
+                    f"{customer} in {result_city}. "
+                    "Continuing Scout sweep."
+                )
+
+            else:
+                claimed, reason = (
+                    claim_consular_scout_hit(
+                        window_id,
+                        result_city,
+                        matched_date,
+                        customer,
+                    )
+                )
+
+                if not claimed:
+                    log.info(
+                        f"[CONSULAR-SCOUT] "
+                        f"Hit ignored: {reason} "
+                        f"({result_city} {matched_date})."
+                    )
+
+                    return last_window_id
+
+                log.warning(
+                    f"[CONSULAR-SCOUT] 🎯 HIT: "
+                    f"{customer} found "
+                    f"{result_city} {matched_date}. "
+                    "Detector booking gets first priority."
+                )
+
+                # Preserve the exact token/context returned
+                # by THIS detector account's Scout Dates call.
+                consular_scout_fastpath = {
+                    "token": str(
+                        result.get(
+                            "token",
+                            "",
+                        )
+                        or ""
+                    ).strip(),
+                    "primaryId": str(
+                        result.get(
+                            "primaryId",
+                            "",
+                        )
+                        or ""
+                    ).strip(),
+                    "appd": str(
+                        result.get(
+                            "appd",
+                            "",
+                        )
+                        or ""
+                    ).strip(),
+                    "applications": (
+                        result.get(
+                            "applications",
+                            [],
+                        )
+                        or []
+                    ),
+                    "isReschedule": bool(
+                        result.get(
+                            "isReschedule",
+                            is_reschedule,
+                        )
+                    ),
+                    "capturedAt": int(
+                        result.get(
+                            "capturedAt",
+                            0,
+                        )
+                        or 0
+                    ),
+                }
+
+                # =============================================
+                # DETECTOR FIRST
+                # =============================================
+                detector_count = (
+                    await _broadcast_consular_scout_hit(
+                        result_city,
+                        matched_date,
+                        customer,
+                        window_id,
+                        only_username=username,
+                        scout_fastpath=(
+                            consular_scout_fastpath
+                        ),
+                    )
+                )
+
+                if detector_count > 0:
+                    _update_state(
+                        live_state_file,
+                        {
+                            "consular_scout_detector_broadcast_pending": True,
+                            "consular_scout_detector_city": (
+                                result_city
+                            ),
+                            "consular_scout_detector_date": (
+                                matched_date
+                            ),
+                            "consular_scout_detector_window_id": (
+                                window_id
+                            ),
+                            "consular_scout_detector_customer": (
+                                customer
+                            ),
+                        },
+                    )
+
+                    log.warning(
+                        f"[CONSULAR-SCOUT] 🚀 DETECTOR FIRST: "
+                        f"{customer} queued for "
+                        f"{result_city} {matched_date}. "
+                        "Fleet will release only after the "
+                        "detector's Consular booking message "
+                        "is sent to its extension."
+                    )
+
+                else:
+                    # Never lose a release because detector
+                    # became unavailable between detection
+                    # and queuing.
+                    log.warning(
+                        f"[CONSULAR-SCOUT] ⚠️ "
+                        f"Detector {customer} could not be queued. "
+                        "Broadcasting immediately to other "
+                        "eligible WAIT MODE accounts."
+                    )
+
+                    await _broadcast_consular_scout_hit(
+                        result_city,
+                        matched_date,
+                        customer,
+                        window_id,
+                        exclude_username=username,
+                    )
+
+                # A HIT ends this account's Scout sweep.
+                return last_window_id
+
+        # -----------------------------------------------------
+        # CITY GAP
+        #
+        # Same pacing as OFC Scout: 1.5 seconds between cities.
+        # But do not sleep after the final city.
+        #
+        # The gap remains fully pre-emptible by CVS.
+        # -----------------------------------------------------
+        if city_index < len(scout_cities) - 1:
+            gap_until = (
+                time.time()
+                + CONSULAR_SCOUT_CITY_GAP_SECONDS
+            )
+
+            while time.time() < gap_until:
+                live_state = _read_state(
+                    live_state_file
+                )
+
+                if live_state.get("pending"):
+                    log.info(
+                        f"[CONSULAR-SCOUT] ⚡ "
+                        f"Booking trigger arrived while "
+                        f"{customer} was between Scout cities. "
+                        "Scout sweep pre-empted immediately."
+                    )
+
+                    return last_window_id
+
+                if not _consular_scout_hold_is_active(
+                    live_state
+                ):
+                    return last_window_id
+
+                await asyncio.sleep(
+                    POLL_INTERVAL
+                )
 
     return last_window_id
 async def _try_pre_cvs_scout(

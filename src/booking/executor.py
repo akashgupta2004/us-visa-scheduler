@@ -108,6 +108,23 @@ async def trigger_extension_booking(
             "scoutOfcTokenCapturedAt",
             0,
         ),
+
+        # OFC Scout direct-to-Book fast path.
+        #
+        # These are the ordered viable slots and the NEW token
+        # returned by the Scout Slots response.
+        "scoutOfcSlots": trigger.get(
+            "scoutOfcSlots",
+            [],
+        ),
+        "scoutOfcSlotsToken": trigger.get(
+            "scoutOfcSlotsToken",
+            "",
+        ),
+        "scoutOfcSlotsCapturedAt": trigger.get(
+            "scoutOfcSlotsCapturedAt",
+            0,
+        ),
     }
 
     log.info(f"🚀 Triggering extension booking for '{customerName}'")
@@ -117,6 +134,9 @@ async def trigger_extension_booking(
 
     if log_config.get("scoutOfcToken"):
         log_config["scoutOfcToken"] = "<preserved>"
+
+    if log_config.get("scoutOfcSlotsToken"):
+        log_config["scoutOfcSlotsToken"] = "<preserved>"
 
     log.info(f"   Config: {json.dumps(log_config)}")
 
@@ -393,6 +413,23 @@ async def trigger_extension_sniper_consular_only(
         ),
         "scoutConsularTokenCapturedAt": trigger.get(
             "scoutConsularTokenCapturedAt",
+            0,
+        ),
+
+        # Consular Scout direct-to-Book fast path.
+        #
+        # Ordered viable slots + the token returned by the
+        # Consular Slots response.
+        "scoutConsularSlots": trigger.get(
+            "scoutConsularSlots",
+            [],
+        ),
+        "scoutConsularSlotsToken": trigger.get(
+            "scoutConsularSlotsToken",
+            "",
+        ),
+        "scoutConsularSlotsCapturedAt": trigger.get(
+            "scoutConsularSlotsCapturedAt",
             0,
         ),
     }
@@ -931,6 +968,386 @@ async def trigger_extension_consular_scout(
 
                 window.__consularScoutResultListener = null;
                 window.__consularScoutResult = null;
+                """
+            )
+        except Exception:
+            pass
+async def trigger_extension_consular_scout_slots(
+    page: Page,
+    scout_config: dict,
+    log: logging.Logger,
+) -> dict:
+    """
+    Immediately fetch Consular Slots for a date already found by
+    this SAME detector account's Consular Dates Scout request.
+
+    This function NEVER books anything.
+
+    Input:
+        date
+        token              <- Dates-response token
+        appd
+        numberOfPeople
+        isReschedule
+
+    Success:
+        {
+            "success": True,
+            "slots": [...],
+            "slotsToken": "...",
+            "slotsCapturedAt": ...,
+            "isReschedule": ...
+        }
+
+    Empty Slots is still a successful API response:
+        {
+            "success": True,
+            "slots": []
+        }
+
+    booking_runner.py decides whether a confirmed SLOT HIT exists.
+    """
+
+    date = str(
+        scout_config.get(
+            "date",
+            "",
+        )
+        or ""
+    )[:10]
+
+    dates_token = str(
+        scout_config.get(
+            "token",
+            "",
+        )
+        or ""
+    ).strip()
+
+    appd = str(
+        scout_config.get(
+            "appd",
+            "",
+        )
+        or ""
+    ).strip()
+
+    try:
+        number_of_people = max(
+            1,
+            int(
+                scout_config.get(
+                    "numberOfPeople",
+                    1,
+                )
+                or 1
+            ),
+        )
+    except (TypeError, ValueError):
+        number_of_people = 1
+
+    is_reschedule = bool(
+        scout_config.get(
+            "isReschedule",
+            False,
+        )
+    )
+
+    if (
+        not date
+        or not dates_token
+        or not appd
+    ):
+        return {
+            "success": False,
+            "slots": [],
+            "msg": (
+                "Missing Consular Scout Slots context "
+                "(date/token/appd)."
+            ),
+            "sessionExpired": False,
+            "rateLimited": False,
+        }
+
+    config = {
+        "date": date,
+        "token": dates_token,
+        "appd": appd,
+        "numberOfPeople": number_of_people,
+        "isReschedule": is_reschedule,
+    }
+
+    log.info(
+        f"[CONSULAR-SCOUT-SLOTS] 🔎 "
+        f"Sending immediate Slots request for "
+        f"{date} "
+        f"(people={number_of_people}, "
+        f"reschedule={is_reschedule})."
+    )
+
+    # ---------------------------------------------------------
+    # Install a one-shot listener before sending the request.
+    # ---------------------------------------------------------
+    await page.evaluate(
+        """
+        window.__consularScoutSlotsResult = null;
+
+        if (window.__consularScoutSlotsResultListener) {
+            window.removeEventListener(
+                'message',
+                window.__consularScoutSlotsResultListener
+            );
+        }
+
+        window.__consularScoutSlotsResultListener = function(event) {
+            if (
+                event.source !== window
+                || !event.data
+            ) {
+                return;
+            }
+
+            if (
+                event.data.action ===
+                'CONSULAR_SCOUT_SLOTS_RESULT'
+            ) {
+                window.__consularScoutSlotsResult =
+                    event.data;
+
+                window.removeEventListener(
+                    'message',
+                    window.__consularScoutSlotsResultListener
+                );
+            }
+        };
+
+        window.addEventListener(
+            'message',
+            window.__consularScoutSlotsResultListener
+        );
+        """
+    )
+
+    try:
+        await page.evaluate(
+            """(config) => {
+                window.postMessage({
+                    action: 'EXECUTE_CONSULAR_SCOUT_SLOTS',
+                    config: config
+                }, '*');
+            }""",
+            config,
+        )
+
+        log.info(
+            f"[CONSULAR-SCOUT-SLOTS] 📨 "
+            f"Slots request sent for {date}."
+        )
+
+        # Slots requests have occasionally taken much longer than
+        # normal Dates calls before returning 524 / backend results.
+        #
+        # Keep enough allowance to capture the real result.
+        # booking_runner.py still owns pre-emption and can cancel
+        # this coroutine immediately if CVS/booking/hold expiry wins.
+        deadline = time.time() + 150
+
+        while time.time() < deadline:
+            try:
+                result = await page.evaluate(
+                    "window.__consularScoutSlotsResult"
+                )
+
+            except Exception as error:
+                error_text = str(error)
+
+                if (
+                    "Execution context was destroyed"
+                    in error_text
+                ):
+                    log.warning(
+                        "[CONSULAR-SCOUT-SLOTS] "
+                        "Navigation occurred during "
+                        "Scout Slots request."
+                    )
+
+                    return {
+                        "success": False,
+                        "slots": [],
+                        "sessionExpired": True,
+                        "rateLimited": False,
+                        "msg": (
+                            "Navigation occurred during "
+                            "Consular Scout Slots request."
+                        ),
+                    }
+
+                raise
+
+            if result is not None:
+                status = str(
+                    result.get(
+                        "status",
+                        "error",
+                    )
+                ).lower()
+
+                message = str(
+                    result.get(
+                        "msg",
+                        "",
+                    )
+                    or ""
+                )
+
+                session_expired = bool(
+                    result.get(
+                        "sessionExpired",
+                        False,
+                    )
+                )
+
+                rate_limited = bool(
+                    result.get(
+                        "rateLimited",
+                        False,
+                    )
+                )
+
+                # Defensive interpretation in case the extension
+                # only exposes the condition through msg.
+                lower_message = message.lower()
+
+                if (
+                    "session expired" in lower_message
+                    or "unauthorized" in lower_message
+                    or "access denied" in lower_message
+                ):
+                    session_expired = True
+
+                if (
+                    "429" in message
+                    or "too many requests" in lower_message
+                ):
+                    rate_limited = True
+
+                if status == "success":
+                    slots = (
+                        result.get(
+                            "slots",
+                            [],
+                        )
+                        or []
+                    )
+
+                    slots_token = str(
+                        result.get(
+                            "slotsToken",
+                            "",
+                        )
+                        or ""
+                    ).strip()
+
+                    slots_captured_at = int(
+                        result.get(
+                            "slotsCapturedAt",
+                            0,
+                        )
+                        or 0
+                    )
+
+                    if slots:
+                        top_slot = slots[0]
+
+                        log.info(
+                            f"[CONSULAR-SCOUT-SLOTS] ✅ "
+                            f"{date} returned "
+                            f"{len(slots)} viable slot(s). "
+                            f"Top: "
+                            f"Time={top_slot.get('Time')}, "
+                            f"Available="
+                            f"{top_slot.get('EntriesAvailable')}, "
+                            f"Num={top_slot.get('Num')}."
+                        )
+
+                    else:
+                        log.info(
+                            f"[CONSULAR-SCOUT-SLOTS] "
+                            f"{date} returned zero viable slots."
+                        )
+
+                    return {
+                        "success": True,
+                        "slots": slots,
+                        "slotsToken": slots_token,
+                        "slotsCapturedAt": (
+                            slots_captured_at
+                        ),
+                        "isReschedule": bool(
+                            result.get(
+                                "isReschedule",
+                                is_reschedule,
+                            )
+                        ),
+                        "sessionExpired": False,
+                        "rateLimited": False,
+                    }
+
+                log.warning(
+                    f"[CONSULAR-SCOUT-SLOTS] "
+                    f"Request failed for {date}: "
+                    f"{message or 'unknown error'}"
+                )
+
+                return {
+                    "success": False,
+                    "slots": [],
+                    "sessionExpired": (
+                        session_expired
+                    ),
+                    "rateLimited": (
+                        rate_limited
+                    ),
+                    "msg": message,
+                }
+
+            await asyncio.sleep(0.05)
+
+        log.warning(
+            f"[CONSULAR-SCOUT-SLOTS] ⏱️ "
+            f"Timed out waiting for Slots result "
+            f"for {date}."
+        )
+
+        return {
+            "success": False,
+            "slots": [],
+            "timedOut": True,
+            "sessionExpired": False,
+            "rateLimited": False,
+            "msg": (
+                "Timed out waiting for "
+                "Consular Scout Slots result."
+            ),
+        }
+
+    finally:
+        # Booking/CVS may cancel this task at any moment.
+        # Never leave a stale page-side result listener behind.
+        try:
+            await page.evaluate(
+                """
+                if (
+                    window.__consularScoutSlotsResultListener
+                ) {
+                    window.removeEventListener(
+                        'message',
+                        window.__consularScoutSlotsResultListener
+                    );
+                }
+
+                window.__consularScoutSlotsResultListener = null;
+                window.__consularScoutSlotsResult = null;
                 """
             )
         except Exception:

@@ -48,6 +48,7 @@ from src.booking.executor import (
     trigger_extension_reschedule,
     trigger_extension_sniper_consular_only,
     trigger_extension_consular_scout,
+    trigger_extension_consular_scout_slots,
 )
 from src.common.utils import safe_id
 from src.common.state import (
@@ -92,7 +93,7 @@ CONSULAR_SCOUT_HOLD_SECONDS = 50 * 60
 CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS = 90
 
 # Match the existing OFC Scout city-to-city pacing.
-CONSULAR_SCOUT_CITY_GAP_SECONDS = 1.5
+CONSULAR_SCOUT_CITY_GAP_SECONDS = 0.5
 
 logging.basicConfig(
     level=logging.INFO,
@@ -746,15 +747,20 @@ def _get_consular_scout_city_order(
         + cities[:start_index]
     )
 
-def _match_consular_scout_dates(
+def _get_qualifying_consular_scout_dates(
     city: str,
     dates,
     config: dict,
     booked_ofc_date: str,
-) -> tuple[bool, str]:
+) -> list[str]:
     """
-    Match Scout results using the SAME effective criteria
-    as the existing CVS post-OFC Consular path.
+    Return ALL qualifying Consular dates for this Scout city.
+
+    This uses exactly the same effective criteria as the
+    existing post-OFC Consular flow.
+
+    Dates are de-duplicated and sorted so Scout may try Slots
+    for every qualifying date before moving to the next city.
     """
     (
         effective_cities,
@@ -770,13 +776,13 @@ def _match_consular_scout_dates(
     )
 
     if normalized_city not in effective_cities:
-        return False, ""
+        return []
 
     if not effective_start or not effective_end:
-        return False, ""
+        return []
 
     if not isinstance(dates, list):
-        return False, ""
+        return []
 
     qualifying_dates = []
 
@@ -798,15 +804,42 @@ def _match_consular_scout_dates(
             and effective_start
             <= date_str
             <= effective_end
+            and date_str not in qualifying_dates
         ):
             qualifying_dates.append(
                 date_str
             )
 
+    qualifying_dates.sort()
+
+    return qualifying_dates
+
+
+def _match_consular_scout_dates(
+    city: str,
+    dates,
+    config: dict,
+    booked_ofc_date: str,
+) -> tuple[bool, str]:
+    """
+    Backward-compatible single-date matcher used by the
+    existing broadcast/eligibility paths.
+
+    Consular Scout itself uses
+    _get_qualifying_consular_scout_dates() so it can test Slots
+    for every qualifying date.
+    """
+    qualifying_dates = (
+        _get_qualifying_consular_scout_dates(
+            city,
+            dates,
+            config,
+            booked_ofc_date,
+        )
+    )
+
     if not qualifying_dates:
         return False, ""
-
-    qualifying_dates.sort()
 
     return True, qualifying_dates[0]
 async def _broadcast_scout_hit(
@@ -949,24 +982,59 @@ async def _broadcast_scout_hit(
             ),
         }
 
-        # Scout token fast-path is ONLY for the account that
-        # actually made the qualifying Dates request.
-                # Scout token fast-path is ONLY for the account that
-        # actually made the qualifying Dates request.
+        # Scout fast-path data belongs ONLY to the detector account.
+        #
+        # Dates token remains available as the compatibility fallback:
+        #
+        #   preserved Slots -> Book
+        #       ↓ non-fatal failure
+        #   preserved Dates token -> Slots -> Book
+        #
+        # Fleet accounts never receive another account's tokens/slots.
         if only_username and scout_fastpath:
             scout_token = str(
-                scout_fastpath.get("token", "")
+                scout_fastpath.get(
+                    "token",
+                    "",
+                )
+                or ""
             ).strip()
 
+            scout_slots = (
+                scout_fastpath.get(
+                    "slots",
+                    [],
+                )
+                or []
+            )
+
+            scout_slots_token = str(
+                scout_fastpath.get(
+                    "slotsToken",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            fastpath_updates = {}
+
             if scout_token:
-                trigger_updates.update(
+                fastpath_updates.update(
                     {
                         "scoutOfcToken": scout_token,
                         "scoutOfcAppd": str(
-                            scout_fastpath.get("appd", "")
+                            scout_fastpath.get(
+                                "appd",
+                                "",
+                            )
+                            or ""
                         ).strip(),
-                        "scoutOfcTokenCity": matched_city,
-                        "scoutOfcTokenDate": matched_date,
+                        "scoutOfcTokenCity": (
+                            matched_city
+                        ),
+                        "scoutOfcTokenDate": (
+                            matched_date
+                        ),
                         "scoutOfcTokenIsReschedule": bool(
                             scout_fastpath.get(
                                 "isReschedule",
@@ -981,6 +1049,34 @@ async def _broadcast_scout_hit(
                             or 0
                         ),
                     }
+                )
+
+            if (
+                isinstance(scout_slots, list)
+                and scout_slots
+                and scout_slots_token
+            ):
+                fastpath_updates.update(
+                    {
+                        "scoutOfcSlots": (
+                            scout_slots
+                        ),
+                        "scoutOfcSlotsToken": (
+                            scout_slots_token
+                        ),
+                        "scoutOfcSlotsCapturedAt": int(
+                            scout_fastpath.get(
+                                "slotsCapturedAt",
+                                0,
+                            )
+                            or 0
+                        ),
+                    }
+                )
+
+            if fastpath_updates:
+                trigger_updates.update(
+                    fastpath_updates
                 )
 
 
@@ -1269,6 +1365,30 @@ async def _broadcast_consular_scout_hit(
                         "scoutConsularTokenCapturedAt": int(
                             scout_fastpath.get(
                                 "capturedAt",
+                                0,
+                            )
+                            or 0
+                        ),
+
+                        # Exact viable Slots returned immediately
+                        # after this detector's Dates HIT.
+                        "scoutConsularSlots": (
+                            scout_fastpath.get(
+                                "slots",
+                                [],
+                            )
+                            or []
+                        ),
+                        "scoutConsularSlotsToken": str(
+                            scout_fastpath.get(
+                                "slotsToken",
+                                "",
+                            )
+                            or ""
+                        ).strip(),
+                        "scoutConsularSlotsCapturedAt": int(
+                            scout_fastpath.get(
+                                "slotsCapturedAt",
                                 0,
                             )
                             or 0
@@ -1729,8 +1849,8 @@ async def _try_pre_consular_scout(
 
             dates = result.get("dates") or []
 
-            matched, matched_date = (
-                _match_consular_scout_dates(
+            qualifying_dates = (
+                _get_qualifying_consular_scout_dates(
                     result_city,
                     dates,
                     my_config,
@@ -1738,7 +1858,7 @@ async def _try_pre_consular_scout(
                 )
             )
 
-            if not matched:
+            if not qualifying_dates:
                 log.info(
                     f"[CONSULAR-SCOUT] "
                     f"No qualifying Consular date found by "
@@ -1747,142 +1867,547 @@ async def _try_pre_consular_scout(
                 )
 
             else:
-                claimed, reason = (
-                    claim_consular_scout_hit(
-                        window_id,
-                        result_city,
-                        matched_date,
-                        customer,
-                    )
-                )
-
-                if not claimed:
-                    log.info(
-                        f"[CONSULAR-SCOUT] "
-                        f"Hit ignored: {reason} "
-                        f"({result_city} {matched_date})."
-                    )
-
-                    return last_window_id
-
-                log.warning(
-                    f"[CONSULAR-SCOUT] 🎯 HIT: "
+                log.info(
+                    f"[CONSULAR-SCOUT] 📅 "
                     f"{customer} found "
-                    f"{result_city} {matched_date}. "
-                    "Detector booking gets first priority."
+                    f"{len(qualifying_dates)} qualifying "
+                    f"date(s) in {result_city}: "
+                    f"{qualifying_dates}. "
+                    "Checking Slots for each date."
                 )
 
-                # Preserve the exact token/context returned
-                # by THIS detector account's Scout Dates call.
-                consular_scout_fastpath = {
-                    "token": str(
-                        result.get(
-                            "token",
-                            "",
+                # =================================================
+                # TRY EVERY QUALIFYING DATE IN THIS CITY
+                #
+                # Slots responses may rotate the token.
+                # Carry the newest token into the next date.
+                # =================================================
+                rolling_token = str(
+                    result.get(
+                        "token",
+                        "",
+                    )
+                    or ""
+                ).strip()
+
+                rolling_token_captured_at = int(
+                    result.get(
+                        "capturedAt",
+                        0,
+                    )
+                    or 0
+                )
+
+                if not rolling_token:
+                    log.warning(
+                        f"[CONSULAR-SCOUT] "
+                        f"{customer} received qualifying Dates "
+                        f"for {result_city}, but the Dates response "
+                        "did not contain a usable token. "
+                        "Continuing to next Scout city."
+                    )
+                    continue
+
+                for (
+                    date_index,
+                    matched_date,
+                ) in enumerate(
+                    qualifying_dates
+                ):
+                    # CVS / real booking ALWAYS wins.
+                    live_state = _read_state(
+                        live_state_file
+                    )
+
+                    if live_state.get("pending"):
+                        log.info(
+                            f"[CONSULAR-SCOUT] ⚡ "
+                            f"Booking trigger arrived before "
+                            f"{customer} could check Slots for "
+                            f"{result_city} {matched_date}. "
+                            "Scout pre-empted immediately."
                         )
-                        or ""
-                    ).strip(),
-                    "primaryId": str(
-                        result.get(
-                            "primaryId",
-                            "",
-                        )
-                        or ""
-                    ).strip(),
-                    "appd": str(
-                        result.get(
-                            "appd",
-                            "",
-                        )
-                        or ""
-                    ).strip(),
-                    "applications": (
+
+                        return last_window_id
+
+                    if not _consular_scout_hold_is_active(
+                        live_state
+                    ):
+                        return last_window_id
+
+                    scout_applications = (
                         result.get(
                             "applications",
                             [],
                         )
                         or []
-                    ),
-                    "isReschedule": bool(
-                        result.get(
-                            "isReschedule",
-                            is_reschedule,
+                    )
+
+                    scout_number_of_people = 1
+
+                    if my_config.get(
+                        "multiPerson",
+                        False,
+                    ):
+                        scout_number_of_people = max(
+                            1,
+                            len(scout_applications),
                         )
-                    ),
-                    "capturedAt": int(
-                        result.get(
-                            "capturedAt",
+
+                    # Preserve the exact token/context used for
+                    # THIS date's Slots request.
+                    token_for_this_date = (
+                        rolling_token
+                    )
+
+                    token_for_this_date_captured_at = (
+                        rolling_token_captured_at
+                    )
+
+                    slots_config = {
+                        "date": matched_date,
+
+                        "token": (
+                            token_for_this_date
+                        ),
+
+                        "appd": str(
+                            result.get(
+                                "appd",
+                                "",
+                            )
+                            or ""
+                        ).strip(),
+
+                        "numberOfPeople": (
+                            scout_number_of_people
+                        ),
+
+                        "isReschedule": bool(
+                            result.get(
+                                "isReschedule",
+                                is_reschedule,
+                            )
+                        ),
+                    }
+
+                    log.info(
+                        f"[CONSULAR-SCOUT] 📅 "
+                        f"{customer} checking Slots for "
+                        f"{result_city} {matched_date} "
+                        f"({date_index + 1}/"
+                        f"{len(qualifying_dates)} qualifying dates)."
+                    )
+
+                    try:
+                        slots_task = asyncio.create_task(
+                            trigger_extension_consular_scout_slots(
+                                page,
+                                slots_config,
+                                log,
+                            )
+                        )
+
+                        while not slots_task.done():
+                            live_state = _read_state(
+                                live_state_file
+                            )
+
+                            # CVS / real booking always pre-empts.
+                            if live_state.get("pending"):
+                                slots_task.cancel()
+
+                                try:
+                                    await slots_task
+                                except asyncio.CancelledError:
+                                    pass
+
+                                log.info(
+                                    f"[CONSULAR-SCOUT] ⚡ "
+                                    f"Booking trigger arrived while "
+                                    f"{customer} was fetching "
+                                    f"Scout Slots for "
+                                    f"{result_city} {matched_date}. "
+                                    "Scout pre-empted immediately."
+                                )
+
+                                return last_window_id
+
+                            if not _consular_scout_hold_is_active(
+                                live_state
+                            ):
+                                slots_task.cancel()
+
+                                try:
+                                    await slots_task
+                                except asyncio.CancelledError:
+                                    pass
+
+                                log.info(
+                                    f"[CONSULAR-SCOUT] ⏭️ "
+                                    f"OFC hold ended while "
+                                    f"{customer} was fetching "
+                                    "Scout Slots."
+                                )
+
+                                return last_window_id
+
+                            await asyncio.sleep(
+                                POLL_INTERVAL
+                            )
+
+                        slots_result = await slots_task
+
+                    except asyncio.CancelledError:
+                        raise
+
+                    except Exception as exc:
+                        log.warning(
+                            f"[CONSULAR-SCOUT] "
+                            f"Slots request failed for "
+                            f"{customer} | "
+                            f"{result_city} {matched_date}: "
+                            f"{exc}"
+                        )
+
+                        slots_result = {}
+
+                    slots_result = (
+                        slots_result
+                        or {}
+                    )
+
+                    # ---------------------------------------------
+                    # SLOT-SCOUT 429
+                    # ---------------------------------------------
+                    if slots_result.get(
+                        "rateLimited"
+                    ):
+                        backoff_until = (
+                            time.time()
+                            + CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS
+                        )
+
+                        _update_state(
+                            live_state_file,
+                            {
+                                "consularScoutBackoffUntil": (
+                                    backoff_until
+                                ),
+                                "consularScoutLast429At": (
+                                    time.time()
+                                ),
+                            },
+                        )
+
+                        log.warning(
+                            f"[CONSULAR-SCOUT] ⚠️ "
+                            f"429/rate limit while fetching "
+                            f"Slots for {customer}. "
+                            f"Scout-only backoff for "
+                            f"{CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS}s. "
+                            "Temporary OFC hold and CVS "
+                            "eligibility remain untouched."
+                        )
+
+                        return last_window_id
+
+                    # ---------------------------------------------
+                    # SLOT-SCOUT SESSION EXPIRY
+                    # ---------------------------------------------
+                    if slots_result.get(
+                        "sessionExpired"
+                    ):
+                        log.warning(
+                            f"[CONSULAR-SCOUT] ⚠️ "
+                            f"Session expired while fetching "
+                            f"Slots for {customer}. "
+                            "Preserving OFC hold and recovering."
+                        )
+
+                        recovered = await recover_session(
+                            page,
+                            customer,
+                            username,
+                        )
+
+                        _update_state(
+                            live_state_file,
+                            {
+                                "pending": False,
+                                "extension_running": False,
+                                "consularScoutLastSessionExpiryAt": (
+                                    time.time()
+                                ),
+                            },
+                        )
+
+                        if not recovered:
+                            log.warning(
+                                f"[CONSULAR-SCOUT] ⚠️ "
+                                f"Session recovery failed for "
+                                f"{customer}. OFC hold preserved."
+                            )
+
+                            return last_window_id
+
+                        log.info(
+                            f"[CONSULAR-SCOUT] ✅ "
+                            f"Session recovered for {customer}. "
+                            "Old Dates/Slots token discarded; "
+                            "moving to next Scout city."
+                        )
+
+                        live_state = _read_state(
+                            live_state_file
+                        )
+
+                        if live_state.get("pending"):
+                            return last_window_id
+
+                        if not _consular_scout_hold_is_active(
+                            live_state
+                        ):
+                            return last_window_id
+
+                        # IMPORTANT:
+                        # Dates token came from the expired session.
+                        # Do NOT use it for another date.
+                        break
+
+                    # ---------------------------------------------
+                    # 500 / 524 / timeout / other unusable Slots
+                    #
+                    # Try the NEXT qualifying date in this SAME city.
+                    # ---------------------------------------------
+                    if not slots_result.get(
+                        "success"
+                    ):
+                        log.info(
+                            f"[CONSULAR-SCOUT] "
+                            f"No usable Slots result for "
+                            f"{customer} in "
+                            f"{result_city} {matched_date}. "
+                            "Trying next qualifying date."
+                        )
+
+                        continue
+
+                    scout_slots = (
+                        slots_result.get(
+                            "slots",
+                            [],
+                        )
+                        or []
+                    )
+
+                    scout_slots_token = str(
+                        slots_result.get(
+                            "slotsToken",
+                            "",
+                        )
+                        or ""
+                    ).strip()
+
+                    scout_slots_captured_at = int(
+                        slots_result.get(
+                            "slotsCapturedAt",
                             0,
                         )
                         or 0
-                    ),
-                }
+                    )
 
-                # =============================================
-                # DETECTOR FIRST
-                # =============================================
-                detector_count = (
-                    await _broadcast_consular_scout_hit(
-                        result_city,
-                        matched_date,
-                        customer,
-                        window_id,
-                        only_username=username,
-                        scout_fastpath=(
-                            consular_scout_fastpath
+                    # Slots response token becomes the input token
+                    # for the NEXT qualifying date.
+                    #
+                    # This applies even when the current date has
+                    # zero viable slots.
+                    if scout_slots_token:
+                        rolling_token = (
+                            scout_slots_token
+                        )
+
+                        rolling_token_captured_at = (
+                            scout_slots_captured_at
+                        )
+
+                    # ---------------------------------------------
+                    # ZERO SLOTS
+                    #
+                    # Continue with next qualifying date in this city.
+                    # ---------------------------------------------
+                    if (
+                        not isinstance(
+                            scout_slots,
+                            list,
+                        )
+                        or not scout_slots
+                        or not scout_slots_token
+                    ):
+                        log.info(
+                            f"[CONSULAR-SCOUT] "
+                            f"{customer} found date "
+                            f"{result_city} {matched_date}, "
+                            "but Slots returned no viable "
+                            "appointment time. "
+                            "Trying next qualifying date."
+                        )
+
+                        continue
+
+                    # =================================================
+                    # CONFIRMED SLOT HIT
+                    # =================================================
+                    claimed, reason = (
+                        claim_consular_scout_hit(
+                            window_id,
+                            result_city,
+                            matched_date,
+                            customer,
+                        )
+                    )
+
+                    if not claimed:
+                        log.info(
+                            f"[CONSULAR-SCOUT] "
+                            f"Slot HIT ignored: {reason} "
+                            f"({result_city} {matched_date})."
+                        )
+
+                        return last_window_id
+
+                    top_slot = scout_slots[0]
+
+                    log.warning(
+                        f"[CONSULAR-SCOUT] 🎯 SLOT HIT: "
+                        f"{customer} found "
+                        f"{result_city} {matched_date} | "
+                        f"{len(scout_slots)} viable slot(s). "
+                        f"Top: Time={top_slot.get('Time')}, "
+                        f"Available="
+                        f"{top_slot.get('EntriesAvailable')}, "
+                        f"Num={top_slot.get('Num')}. "
+                        "Detector booking gets first priority."
+                    )
+
+                    # Preserve BOTH response stages.
+                    consular_scout_fastpath = {
+                        # Exact token used to obtain the winning
+                        # Slots response for this date.
+                        "token": (
+                            token_for_this_date
                         ),
-                    )
-                )
 
-                if detector_count > 0:
-                    _update_state(
-                        live_state_file,
-                        {
-                            "consular_scout_detector_broadcast_pending": True,
-                            "consular_scout_detector_city": (
-                                result_city
+                        "primaryId": str(
+                            result.get(
+                                "primaryId",
+                                "",
+                            )
+                            or ""
+                        ).strip(),
+
+                        "appd": str(
+                            result.get(
+                                "appd",
+                                "",
+                            )
+                            or ""
+                        ).strip(),
+
+                        "applications": (
+                            scout_applications
+                        ),
+
+                        "isReschedule": bool(
+                            result.get(
+                                "isReschedule",
+                                is_reschedule,
+                            )
+                        ),
+
+                        "capturedAt": (
+                            token_for_this_date_captured_at
+                        ),
+
+                        # Slots-response context
+                        "slots": (
+                            scout_slots
+                        ),
+
+                        "slotsToken": (
+                            scout_slots_token
+                        ),
+
+                        "slotsCapturedAt": (
+                            scout_slots_captured_at
+                        ),
+                    }
+
+                    # =============================================
+                    # DETECTOR FIRST
+                    # =============================================
+                    detector_count = (
+                        await _broadcast_consular_scout_hit(
+                            result_city,
+                            matched_date,
+                            customer,
+                            window_id,
+                            only_username=username,
+                            scout_fastpath=(
+                                consular_scout_fastpath
                             ),
-                            "consular_scout_detector_date": (
-                                matched_date
-                            ),
-                            "consular_scout_detector_window_id": (
-                                window_id
-                            ),
-                            "consular_scout_detector_customer": (
-                                customer
-                            ),
-                        },
+                        )
                     )
 
-                    log.warning(
-                        f"[CONSULAR-SCOUT] 🚀 DETECTOR FIRST: "
-                        f"{customer} queued for "
-                        f"{result_city} {matched_date}. "
-                        "Fleet will release only after the "
-                        "detector's Consular booking message "
-                        "is sent to its extension."
-                    )
+                    if detector_count > 0:
+                        _update_state(
+                            live_state_file,
+                            {
+                                "consular_scout_detector_broadcast_pending": True,
+                                "consular_scout_detector_city": (
+                                    result_city
+                                ),
+                                "consular_scout_detector_date": (
+                                    matched_date
+                                ),
+                                "consular_scout_detector_window_id": (
+                                    window_id
+                                ),
+                                "consular_scout_detector_customer": (
+                                    customer
+                                ),
+                            },
+                        )
 
-                else:
-                    # Never lose a release because detector
-                    # became unavailable between detection
-                    # and queuing.
-                    log.warning(
-                        f"[CONSULAR-SCOUT] ⚠️ "
-                        f"Detector {customer} could not be queued. "
-                        "Broadcasting immediately to other "
-                        "eligible WAIT MODE accounts."
-                    )
+                        log.warning(
+                            f"[CONSULAR-SCOUT] 🚀 DETECTOR FIRST: "
+                            f"{customer} queued for "
+                            f"{result_city} {matched_date} "
+                            f"with {len(scout_slots)} preserved "
+                            "Scout slot(s). "
+                            "Fleet will release only after the "
+                            "detector's Consular booking message "
+                            "is sent to its extension."
+                        )
 
-                    await _broadcast_consular_scout_hit(
-                        result_city,
-                        matched_date,
-                        customer,
-                        window_id,
-                        exclude_username=username,
-                    )
+                    else:
+                        log.warning(
+                            f"[CONSULAR-SCOUT] ⚠️ "
+                            f"Detector {customer} could not be queued. "
+                            "Broadcasting immediately to other "
+                            "eligible WAIT MODE accounts."
+                        )
 
-                # A HIT ends this account's Scout sweep.
+                        await _broadcast_consular_scout_hit(
+                            result_city,
+                            matched_date,
+                            customer,
+                            window_id,
+                            exclude_username=username,
+                        )
+
+                    # Confirmed SLOT HIT ends the entire Scout sweep.
+                # A confirmed SLOT HIT ends this account's Scout sweep.
                 return last_window_id
 
         # -----------------------------------------------------
@@ -1990,6 +2515,8 @@ async def _try_pre_cvs_scout(
             fetch_dates_via_browser(
                 page,
                 my_config,
+                city_gap_ms=500,
+                scout_slots=True,
             )
         )
 
@@ -2084,18 +2611,95 @@ async def _try_pre_cvs_scout(
             + " | ".join(raw_dates_found)
         )
 
+    # Scout-Slots mode is authoritative:
+    #
+    # earlyMatch exists ONLY when:
+    #   Dates matched
+    #   -> Slots was fetched immediately
+    #   -> at least one viable slot exists
+    #
+    # Raw Dates in `results` must NOT create a Scout HIT.
+    early_match = (
+        (res or {}).get(
+            "earlyMatch",
+        )
+        or {}
+    )
+
+    early_city = str(
+        early_match.get(
+            "city",
+            "",
+        )
+        or ""
+    ).strip()
+
+    early_date = str(
+        early_match.get(
+            "date",
+            "",
+        )
+        or ""
+    )[:10]
+
+    early_slots = (
+        early_match.get(
+            "slots",
+            [],
+        )
+        or []
+    )
+
+    early_slots_token = str(
+        early_match.get(
+            "slotsToken",
+            "",
+        )
+        or ""
+    ).strip()
+
+    if (
+        not early_city
+        or not early_date
+        or not isinstance(
+            early_slots,
+            list,
+        )
+        or not early_slots
+        or not early_slots_token
+    ):
+        log.info(
+            f"[SCOUT] No qualifying OFC slot found by "
+            f"{customer}."
+        )
+
+        return last_window_id
+
+    # Defensive re-validation against the account's existing
+    # OFC city/date criteria.
+    candidate_results = {
+        early_city: [
+            {
+                "Date": early_date,
+            }
+        ]
+    }
+
     matched, matched_city, matched_date = (
         _match_polled_ofc_dates(
-            results,
+            candidate_results,
             my_config,
         )
     )
 
     if not matched:
-        log.info(
-            f"[SCOUT] No qualifying OFC date found by "
-            f"{customer}."
+        log.warning(
+            f"[SCOUT] OFC Scout returned a slot for "
+            f"{early_city} {early_date}, but it no longer "
+            "matches this account's configured criteria. "
+            "Ignoring result."
         )
+
         return last_window_id
 
     claimed, reason = claim_scout_hit(
@@ -2113,46 +2717,112 @@ async def _try_pre_cvs_scout(
         )
         return last_window_id
 
+    top_slot = early_slots[0]
+
     log.warning(
-        f"[SCOUT] 🎯 PRE-CVS HIT: {customer} found "
-        f"{matched_city} {matched_date}. "
+        f"[SCOUT] 🎯 PRE-CVS SLOT HIT: "
+        f"{customer} found "
+        f"{matched_city} {matched_date} | "
+        f"{len(early_slots)} viable slot(s). "
+        f"Top: Time={top_slot.get('Time')}, "
+        f"Available={top_slot.get('EntriesAvailable')}, "
+        f"Num={top_slot.get('Num')}. "
         "Prioritizing detector booking first."
     )
 
     # ---------------------------------------------------------
     # DETECTOR-FIRST BOOKING
     #
-    # Queue ONLY the account that actually detected the slot.
-    # It must enter its own booking flow before the wider
-    # scout broadcast is released.
+    # Preserve BOTH response stages:
+    #
+    #   Dates token
+    #       -> compatibility fallback
+    #
+    #   ordered Slots + Slots-response token
+    #       -> primary direct-to-Book path
     # ---------------------------------------------------------
-    early_match = (res or {}).get("earlyMatch") or {}
 
     scout_fastpath = None
 
     if (
-        str(early_match.get("city", "")).upper()
+        str(
+            early_match.get(
+                "city",
+                "",
+            )
+        ).upper()
         == str(matched_city).upper()
-        and str(early_match.get("date", ""))
-        == str(matched_date)
+        and str(
+            early_match.get(
+                "date",
+                "",
+            )
+        )[:10]
+        == str(matched_date)[:10]
         and early_match.get("token")
+        and early_match.get("slotsToken")
+        and isinstance(
+            early_match.get("slots"),
+            list,
+        )
+        and early_match.get("slots")
     ):
         scout_fastpath = {
-            "token": early_match.get("token"),
-            "appd": early_match.get("appd", ""),
-            "isReschedule": early_match.get(
-                "isReschedule",
-                False,
+            "token": (
+                early_match.get(
+                    "token"
+                )
             ),
-            "capturedAt": early_match.get(
-                "capturedAt",
-                0,
+
+            "appd": (
+                early_match.get(
+                    "appd",
+                    "",
+                )
+            ),
+
+            "isReschedule": (
+                early_match.get(
+                    "isReschedule",
+                    False,
+                )
+            ),
+
+            "capturedAt": (
+                early_match.get(
+                    "capturedAt",
+                    0,
+                )
+            ),
+
+            "slots": (
+                early_match.get(
+                    "slots",
+                    [],
+                )
+                or []
+            ),
+
+            "slotsToken": (
+                early_match.get(
+                    "slotsToken",
+                    "",
+                )
+            ),
+
+            "slotsCapturedAt": (
+                early_match.get(
+                    "slotsCapturedAt",
+                    0,
+                )
             ),
         }
 
         log.info(
-            f"[SCOUT-FAST] Preserved Dates token for "
-            f"{customer}: {matched_city} {matched_date}."
+            f"[SCOUT-SLOT-FAST] Preserved "
+            f"{len(scout_fastpath['slots'])} OFC slot(s) "
+            f"+ Slots token for {customer}: "
+            f"{matched_city} {matched_date}."
         )
     detector_queued_count = await _broadcast_scout_hit(
         matched_city,
@@ -2979,7 +3649,28 @@ async def run(cdp_port: int, customer: str, username: str):
                             {
                                 "pending": False,
                                 "extension_running": False,
+                                # Never retain stale Scout fast-path data.
+                                "scoutOfcToken": "",
+                                "scoutOfcAppd": "",
+                                "scoutOfcTokenCity": "",
+                                "scoutOfcTokenDate": "",
+                                "scoutOfcTokenIsReschedule": False,
+                                "scoutOfcTokenCapturedAt": 0,
+                                "scoutOfcSlots": [],
+                                "scoutOfcSlotsToken": "",
+                                "scoutOfcSlotsCapturedAt": 0,
 
+                                "scoutConsularToken": "",
+                                "scoutConsularPrimaryId": "",
+                                "scoutConsularAppd": "",
+                                "scoutConsularApplications": [],
+                                "scoutConsularTokenCity": "",
+                                "scoutConsularTokenDate": "",
+                                "scoutConsularTokenIsReschedule": False,
+                                "scoutConsularTokenCapturedAt": 0,
+                                "scoutConsularSlots": [],
+                                "scoutConsularSlotsToken": "",
+                                "scoutConsularSlotsCapturedAt": 0,
                                 # Existing OFC Scout detector cleanup.
                                 "scout_detector_broadcast_pending": False,
                                 "scout_detector_city": "",
@@ -3293,6 +3984,10 @@ async def run(cdp_port: int, customer: str, username: str):
                         "scoutOfcTokenDate",
                         "scoutOfcTokenIsReschedule",
                         "scoutOfcTokenCapturedAt",
+                        "scoutOfcSlots",
+                        "scoutOfcSlotsToken",
+                        "scoutOfcSlotsCapturedAt",
+
                         "scoutConsularToken",
                         "scoutConsularPrimaryId",
                         "scoutConsularAppd",
@@ -3301,6 +3996,9 @@ async def run(cdp_port: int, customer: str, username: str):
                         "scoutConsularTokenDate",
                         "scoutConsularTokenIsReschedule",
                         "scoutConsularTokenCapturedAt",
+                        "scoutConsularSlots",
+                        "scoutConsularSlotsToken",
+                        "scoutConsularSlotsCapturedAt",
                     ] if k in state}
 
 # One-shot token: remove it from persistent state immediately.
@@ -3308,7 +4006,38 @@ async def run(cdp_port: int, customer: str, username: str):
                     # Once copied into this local trigger object,
                     # remove it from persistent state so a future
                     # CVS/Scout trigger can never reuse a stale token.
-                    if trigger.get("scoutConsularToken"):
+                    # OFC Scout token/slot data is one-shot.
+                    # Once copied locally, it must never survive
+                    # into a later CVS/polling/Scout trigger.
+                    # OFC Scout token/slot data is one-shot.
+                    if (
+                        trigger.get("scoutOfcToken")
+                        or trigger.get(
+                            "scoutOfcSlotsToken"
+                        )
+                    ):
+                        _update_state(
+                            state_file,
+                            {
+                                "scoutOfcToken": "",
+                                "scoutOfcAppd": "",
+                                "scoutOfcTokenCity": "",
+                                "scoutOfcTokenDate": "",
+                                "scoutOfcTokenIsReschedule": False,
+                                "scoutOfcTokenCapturedAt": 0,
+                                "scoutOfcSlots": [],
+                                "scoutOfcSlotsToken": "",
+                                "scoutOfcSlotsCapturedAt": 0,
+                            },
+                        )
+
+                    # Consular Scout token/slot data is also one-shot.
+                    if (
+                        trigger.get("scoutConsularToken")
+                        or trigger.get(
+                            "scoutConsularSlotsToken"
+                        )
+                    ):
                         _update_state(
                             state_file,
                             {
@@ -3320,6 +4049,9 @@ async def run(cdp_port: int, customer: str, username: str):
                                 "scoutConsularTokenDate": "",
                                 "scoutConsularTokenIsReschedule": False,
                                 "scoutConsularTokenCapturedAt": 0,
+                                "scoutConsularSlots": [],
+                                "scoutConsularSlotsToken": "",
+                                "scoutConsularSlotsCapturedAt": 0,
                             },
                         )
                     # ── Re-navigate if needed ──────────────────────────────────

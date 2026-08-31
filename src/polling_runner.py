@@ -48,7 +48,12 @@ def load_running_accounts():
         log.error(f"Failed to load accounts: {e}")
         return []
 
-async def fetch_dates_via_browser(page, match_config=None):
+async def fetch_dates_via_browser(
+    page,
+    match_config=None,
+    city_gap_ms=1500,
+    scout_slots=False,
+):
     """
     Executes JS in the context of the browser to fetch OFC dates directly from the official API.
 
@@ -62,6 +67,11 @@ async def fetch_dates_via_browser(page, match_config=None):
         "ofcStartDate": match_config.get("ofcStartDate", ""),
         "ofcEndDate": match_config.get("ofcEndDate", ""),
         "preventImmediate": match_config.get("prevent_immediate", False),
+        "cityGapMs": int(city_gap_ms),
+        "prepareScoutSlots": bool(scout_slots),
+        "multiPerson": bool(
+            match_config.get("multiPerson", False)
+        ),
     }
 
     js_code = """
@@ -86,20 +96,79 @@ async def fetch_dates_via_browser(page, match_config=None):
             "x-requested-with": "XMLHttpRequest"
         };
 
-        // Fetch Family Members to get all application IDs
+        // Fetch Family Members to get all application IDs.
+        //
+        // In Scout-Slots mode we must preserve the SAME applicant
+        // context that the later direct Book request will use.
         let applicationIds = [primaryId];
+        let familyQuerySucceeded = false;
+
         try {
             const familyUrl = `/en-US/custom-actions/?route=/api/v1/schedule-group/query-family-members-ofc&appd=${appd}&cacheString=${Date.now()}`;
-            const bodyStr = `parameters=${encodeURIComponent(JSON.stringify({ primaryId: primaryId, visaClass: "all" }))}`;
-            const res = await fetch(familyUrl, { method: 'POST', headers, body: bodyStr });
+            const bodyStr = `parameters=${encodeURIComponent(JSON.stringify({
+                primaryId: primaryId,
+                visaClass: "all"
+            }))}`;
+
+            const res = await fetch(
+                familyUrl,
+                {
+                    method: "POST",
+                    headers,
+                    body: bodyStr
+                }
+            );
+
             const data = await res.json();
-            if (data && data.Members) {
-                applicationIds = data.Members.map(m => m.ApplicationID).filter(Boolean);
+
+            if (data && Array.isArray(data.Members)) {
+                familyQuerySucceeded = true;
+
+                applicationIds = data.Members
+                    .map(m => m.ApplicationID)
+                    .filter(Boolean);
             }
         } catch (e) {
             console.error(e);
         }
-        if (applicationIds.length === 0) applicationIds = [primaryId];
+
+        if (
+            criteria.prepareScoutSlots &&
+            criteria.multiPerson &&
+            (
+                !familyQuerySucceeded ||
+                applicationIds.length === 0
+            )
+        ) {
+            return {
+                error:
+                    "OFC Scout could not safely resolve multiperson " +
+                    "application IDs before fetching Slots."
+            };
+        }
+
+        if (applicationIds.length === 0) {
+            applicationIds = [primaryId];
+        }
+
+        // For a normal single-person Scout, mint the Dates/Slots
+        // token only for the primary applicant.
+        //
+        // For multiperson Scout, preserve the complete family set.
+        const scoutApplicationIds =
+            criteria.prepareScoutSlots
+                ? (
+                    criteria.multiPerson
+                        ? [...applicationIds]
+                        : [primaryId]
+                )
+                : [...applicationIds];
+
+        const scoutNumberOfPeople =
+            criteria.prepareScoutSlots &&
+            criteria.multiPerson
+                ? Math.max(1, scoutApplicationIds.length)
+                : 1;
 
         const OFC_LOCATION_MAP = {
             "CHENNAI": "3f6bf614-b0db-ec11-a7b4-001dd80234f6",
@@ -137,12 +206,59 @@ async def fetch_dates_via_browser(page, match_config=None):
             }
         }
 
+        // Ask the content-script Scout action to perform the
+        // Slots request immediately while we are still inside
+        // this same OFC Scout browser evaluation.
+        //
+        // There is deliberately no short artificial timeout here.
+        // The outer Python Scout task remains cancellable/pre-emptible.
+        const requestOfcScoutSlots = (config) => {
+            return new Promise((resolve) => {
+                const handler = (event) => {
+                    if (event.source !== window) {
+                        return;
+                    }
+
+                    const message = event.data || {};
+
+                    if (
+                        message.action !==
+                        "OFC_SCOUT_SLOTS_RESULT"
+                    ) {
+                        return;
+                    }
+
+                    window.removeEventListener(
+                        "message",
+                        handler
+                    );
+
+                    resolve(message);
+                };
+
+                window.addEventListener(
+                    "message",
+                    handler
+                );
+
+                window.postMessage(
+                    {
+                        action: "EXECUTE_OFC_SCOUT_SLOTS",
+                        config: config
+                    },
+                    "*"
+                );
+            });
+        };
+
         for (const [city, postId] of Object.entries(OFC_LOCATION_MAP)) {
             try {
                 const dateUrl = `/en-US/custom-actions/?route=/api/v1/schedule-group/get-family-ofc-schedule-days&appd=${appd}&cacheString=${Date.now()}`;
                 const payload = {
                     primaryId: primaryId,
-                    applications: applicationIds,
+                    applications: criteria.prepareScoutSlots
+                        ? scoutApplicationIds
+                        : applicationIds,
                     scheduleDayId: "",
                     scheduleEntryId: "",
                     postId: postId,
@@ -161,8 +277,8 @@ async def fetch_dates_via_browser(page, match_config=None):
                             normalizeCity(city)
                         );
 
-                        const qualifyingDate = cityIsSelected
-                            ? data.ScheduleDays.find((item) => {
+                        const qualifyingDates = cityIsSelected
+                            ? data.ScheduleDays.filter((item) => {
                                   const dateValue = String(
                                       item.Date || item
                                   ).slice(0, 10);
@@ -174,33 +290,265 @@ async def fetch_dates_via_browser(page, match_config=None):
                                       dateValue <= effectiveEndDate
                                   );
                               })
-                            : null;
+                            : [];
 
-                        if (qualifyingDate) {
-                            const matchedDate = String(
-                                qualifyingDate.Date || qualifyingDate
-                            ).slice(0, 10);
+                        if (qualifyingDates.length > 0) {
+                            // -------------------------------------------------
+                            // ORDINARY POLLING
+                            //
+                            // Preserve existing behaviour exactly:
+                            // use only the first qualifying date and return.
+                            // -------------------------------------------------
+                            if (!criteria.prepareScoutSlots) {
+                                const qualifyingDate =
+                                    qualifyingDates[0];
 
-                            console.log(
-                                `[Polling] Qualifying OFC date found: ` +
-                                `${city} ${matchedDate}. ` +
-                                `Stopping remaining city polling.`
+                                const matchedDate = String(
+                                    qualifyingDate.Date ||
+                                    qualifyingDate
+                                ).slice(0, 10);
+
+                                const datesToken = String(
+                                    data.Token || ""
+                                );
+
+                                const datesCapturedAt =
+                                    Date.now();
+
+                                console.log(
+                                    `[Polling] Qualifying OFC date found: ` +
+                                    `${city} ${matchedDate}. ` +
+                                    `Stopping remaining city polling.`
+                                );
+
+                                return {
+                                    success: true,
+                                    results: results,
+                                    earlyMatch: {
+                                        city: city,
+                                        date: matchedDate,
+                                        token: datesToken,
+                                        appd: appd,
+                                        isReschedule:
+                                            isRescheduleUrl,
+                                        capturedAt:
+                                            datesCapturedAt
+                                    }
+                                };
+                            }
+
+                            // -------------------------------------------------
+                            // OFC SCOUT SLOT FAST-PATH
+                            //
+                            // Scout must check Slots for EVERY qualifying
+                            // date in this city before moving to the next city.
+                            //
+                            // IMPORTANT:
+                            // The portal rotates/chains tokens through Slots
+                            // responses, so carry the newest returned token
+                            // into the next date's Slots request.
+                            // -------------------------------------------------
+
+                            let rollingToken = String(
+                                data.Token || ""
                             );
 
-                            
-                            return {
-                                success: true,
-                                results: results,
-                                earlyMatch: {
-                                    city: city,
-                                    date: matchedDate,
-                                    token: String(data.Token || ""),
-                                    appd: appd,
-                                    isReschedule: isRescheduleUrl,
-                                    capturedAt: Date.now()
+                            let rollingTokenCapturedAt =
+                                Date.now();
+
+                            console.log(
+                                `[Polling] OFC Scout found ` +
+                                `${qualifyingDates.length} qualifying ` +
+                                `date(s) in ${city}. ` +
+                                `Checking Slots for each date.`
+                            );
+
+                            for (
+                                let dateIndex = 0;
+                                dateIndex < qualifyingDates.length;
+                                dateIndex++
+                            ) {
+                                const qualifyingDate =
+                                    qualifyingDates[dateIndex];
+
+                                const matchedDate = String(
+                                    qualifyingDate.Date ||
+                                    qualifyingDate
+                                ).slice(0, 10);
+
+                                // Preserve the exact token/context that
+                                // is about to be used for THIS date.
+                                const tokenForThisDate =
+                                    rollingToken;
+
+                                const tokenForThisDateCapturedAt =
+                                    rollingTokenCapturedAt;
+
+                                console.log(
+                                    `[Polling] Checking OFC Scout Slots: ` +
+                                    `${city} ${matchedDate} ` +
+                                    `(${dateIndex + 1}/` +
+                                    `${qualifyingDates.length} ` +
+                                    `qualifying dates).`
+                                );
+
+                                const slotResult =
+                                    await requestOfcScoutSlots({
+                                        date: matchedDate,
+                                        token: tokenForThisDate,
+                                        appd: appd,
+                                        numberOfPeople:
+                                            scoutNumberOfPeople,
+                                        isReschedule:
+                                            isRescheduleUrl
+                                    });
+
+                                if (
+                                    !slotResult ||
+                                    slotResult.status !== "success"
+                                ) {
+                                    const slotError = String(
+                                        slotResult?.msg ||
+                                        "Unknown OFC Scout Slots error."
+                                    );
+
+                                    console.warn(
+                                        `[Polling] OFC Scout Slots failed for ` +
+                                        `${city} ${matchedDate}: ` +
+                                        `${slotError}`
+                                    );
+
+                                    // Session / 429 must stop this Scout
+                                    // attempt. Never keep using a token from
+                                    // an unusable authenticated session.
+                                    if (
+                                        slotResult?.rateLimited ||
+                                        slotResult?.sessionExpired
+                                    ) {
+                                        return {
+                                            success: false,
+                                            results: results,
+                                            error: slotError,
+                                            rateLimited:
+                                                !!slotResult.rateLimited,
+                                            sessionExpired:
+                                                !!slotResult.sessionExpired
+                                        };
+                                    }
+
+                                    // 500 / 524 / timeout / other non-fatal
+                                    // failure:
+                                    //
+                                    // Try the next qualifying date using the
+                                    // latest token we still safely possess.
+                                    console.log(
+                                        `[Polling] Continuing to next ` +
+                                        `qualifying OFC date in ${city}.`
+                                    );
+
+                                    continue;
                                 }
-                            };
-                        }
+
+                                const viableSlots =
+                                    Array.isArray(
+                                        slotResult.slots
+                                    )
+                                        ? slotResult.slots
+                                        : [];
+
+                                const returnedSlotsToken =
+                                    String(
+                                        slotResult.slotsToken ||
+                                        ""
+                                    );
+
+                                const returnedSlotsCapturedAt =
+                                    Number(
+                                        slotResult.slotsCapturedAt ||
+                                        Date.now()
+                                    );
+
+                                // The Slots response becomes the token
+                                // context for the next Slots request.
+                                if (returnedSlotsToken) {
+                                    rollingToken =
+                                        returnedSlotsToken;
+
+                                    rollingTokenCapturedAt =
+                                        returnedSlotsCapturedAt;
+                                }
+
+                                // -----------------------------------------
+                                // CONFIRMED OFC SLOT HIT
+                                // -----------------------------------------
+                                if (
+                                    viableSlots.length > 0 &&
+                                    returnedSlotsToken
+                                ) {
+                                    console.log(
+                                        `[Polling] 🎯 OFC Scout SLOT HIT: ` +
+                                        `${city} ${matchedDate} | ` +
+                                        `${viableSlots.length} viable ` +
+                                        `slot(s). Top: ` +
+                                        `Time=${viableSlots[0].Time}, ` +
+                                        `Available=` +
+                                        `${viableSlots[0].EntriesAvailable}, ` +
+                                        `Num=${viableSlots[0].Num}. ` +
+                                        `Stopping remaining date/city polling.`
+                                    );
+
+                                    return {
+                                        success: true,
+                                        results: results,
+
+                                        earlyMatch: {
+                                            city: city,
+                                            date: matchedDate,
+
+                                            // Token/context used to make
+                                            // THIS successful Slots request.
+                                            token:
+                                                tokenForThisDate,
+                                            primaryId:
+                                                primaryId,
+                                            appd:
+                                                appd,
+                                            applications:
+                                                scoutApplicationIds,
+                                            isReschedule:
+                                                isRescheduleUrl,
+                                            capturedAt:
+                                                tokenForThisDateCapturedAt,
+
+                                            // ALL viable slots + the new
+                                            // token returned by Slots.
+                                            slots:
+                                                viableSlots,
+                                            slotsToken:
+                                                returnedSlotsToken,
+                                            slotsCapturedAt:
+                                                returnedSlotsCapturedAt
+                                        }
+                                    };
+                                }
+
+                                console.log(
+                                    `[Polling] OFC Scout date ` +
+                                    `${city} ${matchedDate} returned ` +
+                                    `zero viable slots. ` +
+                                    `Trying next qualifying date.`
+                                );
+                            }
+
+                            // Every qualifying date in this city was
+                            // checked and none had a usable slot.
+                            console.log(
+                                `[Polling] OFC Scout exhausted all ` +
+                                `${qualifyingDates.length} qualifying ` +
+                                `date(s) in ${city} without a viable slot. ` +
+                                `Continuing to next OFC city.`
+                            );
+                        }                        }
                     } else {
                         results[city] = [];
                     }
@@ -211,7 +559,9 @@ async def fetch_dates_via_browser(page, match_config=None):
             } catch (e) {
                 results[city] = { error: e.message };
             }
-            await new Promise(r => setTimeout(r, 1500));
+            await new Promise(
+    r => setTimeout(r, Number(criteria.cityGapMs ?? 1500))
+);
         }
         
         return { success: true, results: results };

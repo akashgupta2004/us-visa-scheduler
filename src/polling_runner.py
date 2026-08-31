@@ -548,7 +548,7 @@ async def fetch_dates_via_browser(
                                 `date(s) in ${city} without a viable slot. ` +
                                 `Continuing to next OFC city.`
                             );
-                        }                        }
+                        }
                     } else {
                         results[city] = [];
                     }

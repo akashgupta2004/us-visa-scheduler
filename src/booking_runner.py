@@ -93,7 +93,7 @@ CONSULAR_SCOUT_HOLD_SECONDS = 50 * 60
 CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS = 90
 
 # Match the existing OFC Scout city-to-city pacing.
-CONSULAR_SCOUT_CITY_GAP_SECONDS = 0.5
+CONSULAR_SCOUT_CITY_GAP_SECONDS = 1.0
 
 logging.basicConfig(
     level=logging.INFO,
@@ -2407,8 +2407,7 @@ async def _try_pre_consular_scout(
                         )
 
                     # Confirmed SLOT HIT ends the entire Scout sweep.
-                # A confirmed SLOT HIT ends this account's Scout sweep.
-                return last_window_id
+                    return last_window_id
 
         # -----------------------------------------------------
         # CITY GAP
@@ -2515,7 +2514,7 @@ async def _try_pre_cvs_scout(
             fetch_dates_via_browser(
                 page,
                 my_config,
-                city_gap_ms=500,
+                city_gap_ms=1000,
                 scout_slots=True,
             )
         )

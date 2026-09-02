@@ -93,7 +93,7 @@ CONSULAR_SCOUT_HOLD_SECONDS = 50 * 60
 CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS = 90
 
 # Match the existing OFC Scout city-to-city pacing.
-CONSULAR_SCOUT_CITY_GAP_SECONDS = 1.0
+CONSULAR_SCOUT_CITY_GAP_SECONDS = 1.5
 
 logging.basicConfig(
     level=logging.INFO,
@@ -2514,7 +2514,7 @@ async def _try_pre_cvs_scout(
             fetch_dates_via_browser(
                 page,
                 my_config,
-                city_gap_ms=1000,
+                city_gap_ms=1500,
                 scout_slots=True,
             )
         )

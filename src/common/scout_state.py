@@ -17,8 +17,8 @@ SCOUT_STARTS = (
     (59, 55),  # targets :00 / :01
 )
 
-SCOUT_SPACING_SECONDS = 2.0
-SCOUT_CYCLES = 2
+SCOUT_SPACING_SECONDS = 1.5
+SCOUT_CYCLES = 3
 SCOUT_DUE_TOLERANCE_SECONDS = 1.5
 
 # Consular Scout uses the same historical release windows as OFC,

@@ -77,6 +77,7 @@ from src.common.scout_state import (
     claim_consular_scout_hit,
     CONSULAR_SCOUT_STARTS,
     CONSULAR_SCOUT_CYCLES,
+    IST,
 )
 
 load_dotenv()
@@ -94,6 +95,74 @@ CONSULAR_SCOUT_RATE_LIMIT_BACKOFF_SECONDS = 90
 
 # Match the existing OFC Scout city-to-city pacing.
 CONSULAR_SCOUT_CITY_GAP_SECONDS = 1.5
+
+# After one COMPLETE five-city Consular Scout sweep,
+# wait this long before the same WAIT MODE account
+# starts another sweep.
+CONSULAR_SCOUT_REPEAT_SECONDS = 60.0
+
+
+def _get_active_consular_scout_region():
+    """
+    Return the currently-active high-probability Consular Scout region.
+
+    Regions are explicitly IST:
+
+        :25:00 -> :34:59
+        :55:00 -> :04:59
+
+    Outside these regions Consular Scout does nothing and the
+    account simply remains available for normal CVS Consular alerts.
+    """
+    now = datetime.now(IST)
+
+    if 25 <= now.minute < 35:
+        region_start = now.replace(
+            minute=25,
+            second=0,
+            microsecond=0,
+        )
+
+    elif now.minute >= 55:
+        region_start = now.replace(
+            minute=55,
+            second=0,
+            microsecond=0,
+        )
+
+    elif now.minute < 5:
+        region_start = (
+            now - timedelta(hours=1)
+        ).replace(
+            minute=55,
+            second=0,
+            microsecond=0,
+        )
+
+    else:
+        return None
+
+    region_end = (
+        region_start
+        + timedelta(minutes=10)
+    )
+
+    if not (
+        region_start
+        <= now
+        < region_end
+    ):
+        return None
+
+    return {
+        "start": region_start,
+        "end": region_end,
+        "region_id": (
+            region_start.strftime(
+                "%Y%m%d-%H%M"
+            )
+        ),
+    }
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1463,20 +1532,15 @@ async def _try_pre_consular_scout(
     CVS / real booking triggers always pre-empt Scout immediately.
     """
 
-    due = get_due_consular_scout_window(
-        account_position,
-        account_count,
-        last_window_id,
-    )
+    # Consular Scout no longer depends on the 33-account
+    # fleet schedule.
+    #
+    # Every account that is genuinely holding OFC may Scout
+    # independently throughout the high-probability region.
+    region = _get_active_consular_scout_region()
 
-    if not due:
+    if not region:
         return last_window_id
-
-    window_id = due["window_id"]
-
-    # Mark immediately so this runner cannot perform
-    # the same scheduled Scout turn twice.
-    last_window_id = window_id
 
     live_state_file = (
         Path(__file__).parent
@@ -1498,6 +1562,50 @@ async def _try_pre_consular_scout(
             f"[CONSULAR-SCOUT] ⏭️ "
             f"{customer} busy; Scout sweep skipped."
         )
+        return last_window_id
+
+    # -----------------------------------------------------
+    # REPEAT DELAY
+    #
+    # The 60-second timer begins only AFTER a complete
+    # five-city sweep has finished.
+    #
+    # Tie it to the current OFC hold so an old hold can
+    # never delay scouting after a newly-booked OFC.
+    # -----------------------------------------------------
+    try:
+        last_sweep_finished_at = float(
+            state.get(
+                "consularScoutLastSweepFinishedAt",
+                0,
+            )
+            or 0
+        )
+    except (TypeError, ValueError):
+        last_sweep_finished_at = 0
+
+    try:
+        current_wait_start = float(
+            state.get(
+                "waitStartTime",
+                0,
+            )
+            or 0
+        )
+    except (TypeError, ValueError):
+        current_wait_start = 0
+
+    if (
+        last_sweep_finished_at
+        and current_wait_start
+        and last_sweep_finished_at
+        >= current_wait_start
+        and (
+            time.time()
+            - last_sweep_finished_at
+        )
+        < CONSULAR_SCOUT_REPEAT_SECONDS
+    ):
         return last_window_id
 
     # Scout-specific rate-limit protection.
@@ -1534,6 +1642,57 @@ async def _try_pre_consular_scout(
 
     if not my_config:
         return last_window_id
+
+    # Create one shared time-bucket ID for this repeat.
+    #
+    # Accounts scouting during roughly the same repeat still
+    # share the same Consular Scout hit namespace, so the
+    # existing city/date dedupe continues to work.
+    now_ist = datetime.now(IST)
+
+    elapsed_in_region = max(
+        0.0,
+        (
+            now_ist
+            - region["start"]
+        ).total_seconds(),
+    )
+
+    sweep_number = (
+        int(
+            elapsed_in_region
+            // CONSULAR_SCOUT_REPEAT_SECONDS
+        )
+        + 1
+    )
+
+    # Keep the old HHMM55 shape purely so the existing
+    # starting-city rotation parser continues to work.
+    rotation_anchor = (
+        region["start"].replace(
+            second=55,
+        )
+    )
+
+    window_id = (
+        "consular-"
+        f"{rotation_anchor.strftime('%Y%m%d-%H%M%S')}"
+        f"-c{sweep_number}"
+    )
+
+    last_window_id = window_id
+
+    _update_state(
+        live_state_file,
+        {
+            "consularScoutLastSweepStartedAt": (
+                time.time()
+            ),
+            "consularScoutActiveRegion": (
+                region["region_id"]
+            ),
+        },
+    )
 
     booked_ofc_date = str(
         state.get(
@@ -1587,6 +1746,17 @@ async def _try_pre_consular_scout(
     for city_index, assigned_city in enumerate(
         scout_cities
     ):
+        # Do not begin another city after the high-probability
+        # Consular Scout region has ended.
+        if not _get_active_consular_scout_region():
+            log.info(
+                f"[CONSULAR-SCOUT] ⏹️ "
+                f"High-probability Consular Scout region "
+                f"ended for {customer}. Returning to normal "
+                "CVS WAIT MODE."
+            )
+            return last_window_id
+
         # -----------------------------------------------------
         # BEFORE EACH CITY
         #
@@ -2447,6 +2617,32 @@ async def _try_pre_consular_scout(
                     POLL_INTERVAL
                 )
 
+    # -----------------------------------------------------
+    # COMPLETE FIVE-CITY SWEEP FINISHED
+    #
+    # The next Consular Scout sweep for THIS account may
+    # begin only after 60 seconds, provided we are still
+    # inside the high-probability region and OFC hold remains.
+    # -----------------------------------------------------
+    sweep_finished_at = time.time()
+
+    _update_state(
+        live_state_file,
+        {
+            "consularScoutLastSweepFinishedAt": (
+                sweep_finished_at
+            ),
+        },
+    )
+
+    log.info(
+        f"[CONSULAR-SCOUT] ✅ "
+        f"{customer} completed full Consular Scout sweep. "
+        f"Next sweep eligible in "
+        f"{CONSULAR_SCOUT_REPEAT_SECONDS:g}s "
+        "if still inside the high-probability region."
+    )
+
     return last_window_id
 async def _try_pre_cvs_scout(
     page,
@@ -2514,7 +2710,7 @@ async def _try_pre_cvs_scout(
             fetch_dates_via_browser(
                 page,
                 my_config,
-                city_gap_ms=1500,
+                city_gap_ms=1000,
                 scout_slots=True,
             )
         )

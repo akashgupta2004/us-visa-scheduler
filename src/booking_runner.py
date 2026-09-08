@@ -2710,7 +2710,7 @@ async def _try_pre_cvs_scout(
             fetch_dates_via_browser(
                 page,
                 my_config,
-                city_gap_ms=1000,
+                city_gap_ms=1250,
                 scout_slots=True,
             )
         )

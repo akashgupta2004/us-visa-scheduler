@@ -18,31 +18,16 @@ class MongoDBLogger:
             return cls._instance
 
     def _init_logger(self):
+        # MongoDB logging disabled.
+        # Local terminal/orchestrator/extension logs remain unaffected.
         self.queue = queue.Queue()
-        self.flush_interval = 1800  # 30 minutes
-        self.batch_size = 500       # Max items before forced flush
-        self.running = True
-        
-        # Load from env or use defaults provided
-        mongo_uri = os.getenv("MONGO_URI", "mongodb+srv://lakshya:eiFAT3ppk5N7Fde@cluster0.0nsi2e7.mongodb.net/?retryWrites=true&w=majority")
-        db_name = os.getenv("MONGODB_DATABASE_NAME", "LeSo")
-        
-        try:
-            self.client = MongoClient(mongo_uri)
-            self.db = self.client[db_name]
-            self.collection = self.db["logs"]
-            
-            # Setup TTL index for 48-hour retention (172800 seconds)
-            self.collection.create_index([("createdAt", ASCENDING)], expireAfterSeconds=172800)
-        except Exception as e:
-            print(f"Failed to initialize MongoDB connection: {e}")
-            self.collection = None
-
-        self.logging_enabled = True
-
-        self.thread = threading.Thread(target=self._flush_thread, daemon=True)
-        self.thread.start()
-        atexit.register(self.flush)
+        self.flush_interval = 1800
+        self.batch_size = 500
+        self.running = False
+        self.logging_enabled = False
+        self.client = None
+        self.db = None
+        self.collection = None
 
     def _flush_thread(self):
         while self.running:
